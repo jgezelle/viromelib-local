@@ -1,0 +1,331 @@
+---
+title: "limma"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(limma)
+
+counts_path <- "work/06_counts/alt_counts_edit.csv"
+meta_path   <- "work/06_counts/sample_table_edit.csv"
+
+cts  <- read.csv(counts_path, check.names = FALSE, stringsAsFactors = FALSE)
+meta <- read.csv(meta_path,   check.names = FALSE, stringsAsFactors = FALSE)
+
+# Long table: one row = mutation feature in one sample
+cts_long <- cts %>%
+  tidyr::pivot_longer(
+    cols = -feature,
+    names_to = "sample",
+    values_to = "mut_count"
+  ) %>%
+  dplyr::left_join(meta, by = "sample") %>%
+  tidyr::separate_wider_delim(
+    feature,
+    delim = "_",
+    names = c("pos", "change"),
+    too_few = "error"
+  ) %>%
+  dplyr::mutate(
+    pos = as.integer(pos),
+    replicate = factor(replicate),
+    condition = factor(condition, levels = c("R", "X"))
+  )
+
+# Restrict to minimal-element windows
+cts_long <- cts_long %>%
+  dplyr::filter(
+    (virus == "ZIKV" & pos >= 29 & pos <= 107) |
+    (virus == "DENV" & pos >= 28 & pos <= 104)
+  )
+
+# Optional low-count filter:
+# keep mutation features with at least 20 total counts across all samples of that virus
+feature_totals <- cts_long %>%
+  dplyr::group_by(virus, pos, change) %>%
+  dplyr::summarise(total_mut_count = sum(mut_count), .groups = "drop") %>%
+  dplyr::mutate(feature_id = paste(pos, change, sep = "_"))
+
+keep_zikv <- feature_totals %>%
+  dplyr::filter(virus == "ZIKV", total_mut_count >= 20) %>%
+  dplyr::pull(feature_id)
+
+keep_denv <- feature_totals %>%
+  dplyr::filter(virus == "DENV", total_mut_count >= 20) %>%
+  dplyr::pull(feature_id)
+
+cts_long <- cts_long %>%
+  dplyr::mutate(feature_id = paste(pos, change, sep = "_")) %>%
+  dplyr::filter(
+    (virus == "ZIKV" & feature_id %in% keep_zikv) |
+    (virus == "DENV" & feature_id %in% keep_denv)
+  )
+
+# CRISPR-style normalization:
+# frequency of each mutation among all mutation-feature counts in that sample
+# then log2-transform with pseudocount
+pseudocount <- 1e-6
+
+cts_long <- cts_long %>%
+  dplyr::group_by(sample) %>%
+  dplyr::mutate(
+    sample_total_mut = sum(mut_count),
+    mut_freq = mut_count / sample_total_mut,
+    log_freq = log2(mut_freq + pseudocount)
+  ) %>%
+  dplyr::ungroup()
+
+# Split by virus
+cts_long_zikv <- cts_long %>% dplyr::filter(virus == "ZIKV")
+cts_long_denv <- cts_long %>% dplyr::filter(virus == "DENV")
+
+meta_zikv <- meta %>%
+  dplyr::filter(virus == "ZIKV") %>%
+  dplyr::mutate(
+    replicate = factor(replicate),
+    condition = factor(condition, levels = c("R", "X"))
+  )
+
+meta_denv <- meta %>%
+  dplyr::filter(virus == "DENV") %>%
+  dplyr::mutate(
+    replicate = factor(replicate),
+    condition = factor(condition, levels = c("R", "X"))
+  )
+
+# Build limma matrices
+mat_zikv <- cts_long_zikv %>%
+  dplyr::select(feature_id, sample, log_freq) %>%
+  tidyr::pivot_wider(names_from = sample, values_from = log_freq) %>%
+  tibble::column_to_rownames("feature_id") %>%
+  as.matrix()
+
+mat_denv <- cts_long_denv %>%
+  dplyr::select(feature_id, sample, log_freq) %>%
+  tidyr::pivot_wider(names_from = sample, values_from = log_freq) %>%
+  tibble::column_to_rownames("feature_id") %>%
+  as.matrix()
+
+# Reorder metadata to match matrix columns
+meta_zikv <- meta_zikv[match(colnames(mat_zikv), meta_zikv$sample), , drop = FALSE]
+meta_denv <- meta_denv[match(colnames(mat_denv), meta_denv$sample), , drop = FALSE]
+
+stopifnot(all(colnames(mat_zikv) == meta_zikv$sample))
+stopifnot(all(colnames(mat_denv) == meta_denv$sample))
+
+# Design matrices
+design_zikv <- model.matrix(~ replicate + condition, data = meta_zikv)
+design_denv <- model.matrix(~ replicate + condition, data = meta_denv)
+
+# Limma fits
+fit_zikv <- limma::lmFit(mat_zikv, design_zikv)
+fit_zikv <- limma::eBayes(fit_zikv)
+zikv_res_drop <- limma::topTable(fit_zikv, coef = "conditionX", number = Inf)
+
+fit_denv <- limma::lmFit(mat_denv, design_denv)
+fit_denv <- limma::eBayes(fit_denv)
+denv_res_drop <- limma::topTable(fit_denv, coef = "conditionX", number = Inf)
+
+# Tidy for plotting
+zikv_res_drop <- zikv_res_drop %>%
+  tibble::rownames_to_column("feature_id") %>%
+  tidyr::separate_wider_delim(feature_id, delim = "_", names = c("pos", "change"), too_few = "error") %>%
+  dplyr::mutate(
+    pos = as.integer(pos),
+    neglog10padj = -log10(adj.P.Val),
+    neglog10padj = ifelse(is.finite(neglog10padj), neglog10padj, NA_real_),
+    neglog10padj_cap = pmin(neglog10padj, 10),
+    mutant_base = sub(".*>", "", change),
+    mutant_base = gsub("T", "U", mutant_base)
+  )
+
+denv_res_drop <- denv_res_drop %>%
+  tibble::rownames_to_column("feature_id") %>%
+  tidyr::separate_wider_delim(feature_id, delim = "_", names = c("pos", "change"), too_few = "error") %>%
+  dplyr::mutate(
+    pos = as.integer(pos),
+    neglog10padj = -log10(adj.P.Val),
+    neglog10padj = ifelse(is.finite(neglog10padj), neglog10padj, NA_real_),
+    neglog10padj_cap = pmin(neglog10padj, 10),
+    mutant_base = sub(".*>", "", change),
+    mutant_base = gsub("T", "U", mutant_base)
+  )
+
+# Quick summaries
+cat("\nZIKV dropout logFC summary:\n")
+print(summary(zikv_res_drop$logFC))
+
+cat("\nDENV dropout logFC summary:\n")
+print(summary(denv_res_drop$logFC))
+
+```
+```{r}
+library(ggplot2)
+library(patchwork)
+
+plot_dropout_bubbles <- function(res_df, title = NULL) {
+  base_colors <- c(
+    A = "#2ca25f",
+    U = "#de2d26",
+    C = "#fdae6b",
+    G = "#3182bd"
+  )
+
+  xpos <- seq(min(res_df$pos), max(res_df$pos), by = 1)
+
+  ggplot(res_df, aes(x = pos, y = logFC)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.3) +
+    geom_point(
+      aes(size = neglog10padj_cap, fill = mutant_base),
+      shape = 21,
+      color = "black",
+      stroke = 0.2,
+      alpha = 0.9
+    ) +
+    scale_fill_manual(
+      values = base_colors,
+      breaks = c("A", "U", "C", "G"),
+      name = "Mutant base"
+    ) +
+    scale_size_continuous(
+      name = "-log10(adj.P.Val)",
+      range = c(1.2, 5.5)
+    ) +
+    scale_x_continuous(
+      breaks = xpos,
+      expand = expansion(add = c(1, 1))
+    ) +
+    theme_classic() +
+    labs(
+      title = title,
+      x = NULL,
+      y = "Dropout log2FC (X vs R)"
+    ) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.title = element_text(size = 12),
+      panel.grid.major.x = element_line(color = "grey85", linewidth = 0.3),
+      panel.grid.major.y = element_line(color = "grey88", linewidth = 0.3),
+      panel.grid.minor.x = element_blank(),
+      panel.grid.minor.y = element_blank()
+    )
+}
+
+make_full_track_df <- function(pos_start, seq_rna, dotbracket, mut_start, mut_end) {
+  tibble(
+    pos = pos_start:(pos_start + nchar(seq_rna) - 1),
+    base = strsplit(seq_rna, "")[[1]],
+    db = strsplit(dotbracket, "")[[1]],
+    region = ifelse(pos >= mut_start & pos <= mut_end, "mutated", "constant")
+  )
+}
+
+plot_full_track <- function(track_df, label_every = 5) {
+  labs_df <- track_df %>%
+    dplyr::mutate(show = (pos - min(pos)) %% label_every == 0)
+
+  xpos <- seq(min(track_df$pos), max(track_df$pos), by = 1)
+
+  ggplot() +
+    geom_text(
+      data = track_df,
+      aes(x = pos, y = 0, label = db, color = region),
+      size = 3.3,
+      show.legend = FALSE
+    ) +
+    geom_text(
+      data = track_df,
+      aes(x = pos, y = -1, label = base, color = region),
+      size = 3.3,
+      show.legend = FALSE
+    ) +
+    geom_text(
+      data = labs_df %>% dplyr::filter(show),
+      aes(x = pos, y = 1, label = pos),
+      size = 2.8
+    ) +
+    scale_color_manual(values = c(mutated = "black", constant = "grey60")) +
+    scale_x_continuous(
+      breaks = xpos,
+      expand = expansion(add = c(1, 1))
+    ) +
+    scale_y_continuous(
+      breaks = c(1, 0, -1),
+      labels = c("pos", "db", "seq")
+    ) +
+    theme_classic() +
+    labs(x = "Position", y = NULL) +
+    theme(
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major.x = element_line(color = "grey85", linewidth = 0.3),
+      panel.grid.major.y = element_blank(),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+}
+
+make_dropout_bubble_with_track <- function(res_df, pos_start, seq_rna, dotbracket,
+                                           mut_start, mut_end,
+                                           title, out_pdf,
+                                           label_every = 5,
+                                           width = 20, height = 5) {
+  track_df <- make_full_track_df(
+    pos_start = pos_start,
+    seq_rna = seq_rna,
+    dotbracket = dotbracket,
+    mut_start = mut_start,
+    mut_end = mut_end
+  )
+
+  p_top <- plot_dropout_bubbles(res_df, title = title)
+  p_bot <- plot_full_track(track_df, label_every = label_every)
+
+  combined <- p_top / p_bot + plot_layout(heights = c(2.4, 1))
+  ggsave(out_pdf, combined, width = width, height = height)
+  combined
+}
+```
+
+```{r}
+dir.create("work/07_deseq2_results", recursive = TRUE, showWarnings = FALSE)
+
+p_zikv_drop <- make_dropout_bubble_with_track(
+  res_df = zikv_res_drop,
+  pos_start = 29,
+  seq_rna = "AGCUCAUAGUCAGGCCGAGAACGCCAUGGCACGGAAGAAGCCAUGCUGCCUGUGAGCCCCUCAGAGGACACUGAGUCAAAAAA",
+  dotbracket = "..........(((((((....)).((((((.........))))))..))))).......(((((......)))))........",
+  mut_start = 29,
+  mut_end = 107,
+  title = "ZIKV: dropout-style depletion analysis",
+  out_pdf = "work/07_deseq2_results/ZIKV_dropout_bubble_with_track.pdf"
+)
+
+p_denv_drop <- make_dropout_bubble_with_track(
+  res_df = denv_res_drop,
+  pos_start = 28,
+  seq_rna = "UAAAAGAAGUCAGGCCAUCAUAAAUGCCAUAGCUGGAGUAAACUAUGCAGCCUGUAGCUCCACCUGAGAAGGUGUAAAAAA",
+  dotbracket = "..........(((((.........((.(((((.((.....))))))))))))))......(((((....))))).......",
+  mut_start = 28,
+  mut_end = 104,
+  title = "DENV: dropout-style depletion analysis",
+  out_pdf = "work/07_deseq2_results/DENV_dropout_bubble_with_track.pdf"
+)
+
+print(p_zikv_drop)
+print(p_denv_drop)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

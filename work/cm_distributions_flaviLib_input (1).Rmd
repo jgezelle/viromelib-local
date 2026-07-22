@@ -1,0 +1,217 @@
+---
+title: "CM distributions - flaviLib (input)"
+output: html_notebook
+---
+
+```{r setup, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+
+knitr::opts_knit$set(root.dir = "~/Desktop/viromelib")
+```
+
+```{r paths}
+ROOT    <- "~/Desktop/viromelib"
+tax_path <- file.path(ROOT, "data/virus_stats_flaviLib_20260602.csv")
+TBLOUT  <- file.path(ROOT, "work/06_infernal/flaviLib/tblout")
+fig_dir <- file.path(ROOT, "work/flaviOUT/figures")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+TBLS <- c(
+  "cl1a xrRNA" = file.path(TBLOUT, "CL_Class_1a_xrRNA_final.cm.tbl"),
+  "cl1b xrRNA" = file.path(TBLOUT, "CL_Class_1b_xrRNA_final.cm.tbl"),
+  "cl2 xrRNA"  = file.path(TBLOUT, "CL_Class_2_xrRNA_final.cm.tbl")
+)
+
+missing <- TBLS[!file.exists(TBLS)]
+if (length(missing) > 0)
+  stop("Missing tblout files:\n", paste(" ", missing, collapse = "\n"))
+
+SIG_ONLY <- TRUE   # TRUE = "!" hits only; FALSE = include "?" marginal
+
+CM_LEVELS  <- c("cl1a xrRNA", "cl1b xrRNA", "cl2 xrRNA", "Unannotated")
+CM_COLOURS <- c(
+  "cl1a xrRNA"  = "#378ADD",
+  "cl1b xrRNA"  = "#1D9E75",
+  "cl2 xrRNA"   = "#D85A30",
+  "Unannotated" = "#B4B2A9"
+)
+```
+
+---
+
+## 1. Load taxonomy
+
+The taxonomy CSV has one row per genome accession with family and genus.
+Fasta IDs are `accession|region` — match on the accession before the pipe.
+Genera with no formal assignment and insect-specific unclassified viruses
+are grouped as "Unannotated".
+
+```{r load_tax}
+tax <- read.csv(tax_path, stringsAsFactors = FALSE)
+
+cat("Total sequences in flaviLib:", nrow(tax), "\n\n")
+cat("Family breakdown:\n")
+print(count(tax, family, sort = TRUE))
+cat("\nGenus breakdown:\n")
+print(count(tax, genus, sort = TRUE))
+```
+
+---
+
+## 2. Parse cmsearch tblout files
+
+```{r parse_tblout}
+read_tblout <- function(path, cm_label) {
+  lines <- readLines(path)
+  lines <- lines[!startsWith(lines, "#") & nchar(trimws(lines)) > 0]
+  if (length(lines) == 0) return(NULL)
+  do.call(rbind, lapply(lines, function(l) {
+    p <- strsplit(trimws(l), "\\s+")[[1]]
+    data.frame(
+      fasta_id  = p[1],
+      E_value   = as.numeric(p[16]),
+      score     = as.numeric(p[15]),
+      inc       = p[17],
+      cm_class  = cm_label,
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+cm_all <- do.call(rbind, mapply(read_tblout, TBLS, names(TBLS),
+                                SIMPLIFY = FALSE))
+
+# Extract base accession (before pipe) to join with taxonomy
+cm_all$accession <- sub("\\|.*", "", cm_all$fasta_id)
+
+cat("All cmsearch hits (! = significant, ? = marginal):\n")
+print(with(cm_all, table(cm_class, inc)))
+```
+
+---
+
+## 3. CM annotation of input sequences
+
+Each sequence assigned to CM class with best (lowest) E-value. Unmatched = Unannotated.
+
+```{r input_cm}
+cm_filt <- cm_all %>%
+  { if (SIG_ONLY) filter(., inc == "!") else . }
+
+# Per accession: best hit across all CMs
+cm_best <- cm_filt %>%
+  group_by(accession) %>%
+  slice_min(E_value, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(accession, cm_class, E_value)
+
+# Join taxonomy with CM hits; exclude Tombusviridae
+acc_input <- tax %>%
+  filter(family != "Tombusviridae") %>%
+  left_join(cm_best, by = "accession") %>%
+  mutate(
+    cm_class = ifelse(is.na(cm_class), "Unannotated", cm_class),
+    cm_class = factor(cm_class, levels = CM_LEVELS),
+    genus    = ifelse(is.na(genus) | genus == "", "Unannotated", genus)
+  )
+
+# Genus order by total count descending
+genus_order <- acc_input %>%
+  count(genus, sort = TRUE) %>%
+  pull(genus)
+
+acc_input <- acc_input %>%
+  mutate(genus = factor(genus, levels = genus_order))
+
+cat("=== INPUT CM annotation (n =", nrow(acc_input), "sequences) ===\n\n")
+
+# Overall CM totals
+input_cm_totals <- count(acc_input, cm_class) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+print(input_cm_totals)
+write.csv(input_cm_totals,
+          file.path(fig_dir, "flaviLib_input_cm_totals.csv"),
+          row.names = FALSE)
+
+# Explicit unannotated summary
+unann_total <- input_cm_totals %>% filter(cm_class == "Unannotated")
+cat(sprintf("\n%d of %d input sequences (%.1f%%) have no CM hit (Unannotated)\n",
+            unann_total$n, sum(input_cm_totals$n), unann_total$pct))
+
+# Unannotated breakdown by family
+unann_by_family <- acc_input %>%
+  filter(cm_class == "Unannotated") %>%
+  count(family, name = "n_unannotated") %>%
+  mutate(
+    total_in_family = acc_input %>%
+      count(family) %>%
+      { setNames(.$n, .$family) }[as.character(family)],
+    pct_of_family = round(100 * n_unannotated / total_in_family, 1)
+  ) %>%
+  arrange(desc(n_unannotated))
+cat("\nUnannotated (no CM hit) by family:\n")
+print(unann_by_family, n = Inf)
+write.csv(unann_by_family,
+          file.path(fig_dir, "flaviLib_input_unannotated_by_family.csv"),
+          row.names = FALSE)
+
+# By genus — wide table
+input_cm_by_genus <- acc_input %>%
+  count(genus, cm_class) %>%
+  pivot_wider(names_from = cm_class, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  arrange(desc(Total))
+cat("\nBy genus:\n")
+print(input_cm_by_genus, n = Inf)
+write.csv(input_cm_by_genus,
+          file.path(fig_dir, "flaviLib_input_cm_by_genus.csv"),
+          row.names = FALSE)
+
+# By family — wide table
+input_cm_by_family <- acc_input %>%
+  count(family, cm_class) %>%
+  pivot_wider(names_from = cm_class, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  arrange(desc(Total))
+cat("\nBy family:\n")
+print(input_cm_by_family, n = Inf)
+write.csv(input_cm_by_family,
+          file.path(fig_dir, "flaviLib_input_cm_by_family.csv"),
+          row.names = FALSE)
+```
+
+---
+
+## 4. Figure: input sequences by genus, coloured by CM class
+
+```{r fig_input, fig.width = 8, fig.height = 4.5}
+p_input <- acc_input %>%
+  count(genus, cm_class) %>%
+  mutate(genus = factor(genus, levels = genus_order)) %>%
+  ggplot(aes(x = genus, y = n, fill = cm_class)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = CM_COLOURS, name = "CM class", drop = FALSE) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08)),
+                     breaks = scales::pretty_breaks()) +
+  labs(
+    title    = paste0("flaviLib input: ", nrow(acc_input),
+                      " sequences — cmsearch CM annotation"),
+    subtitle = paste0(nrow(acc_input %>% filter(cm_class != "Unannotated")),
+                      " with CM hit  |  SIG_ONLY = ", SIG_ONLY),
+    x = NULL, y = "Sequences"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x     = element_text(angle = 35, hjust = 1),
+        legend.position = "right",
+        plot.title      = element_text(size = 11, face = "bold"),
+        plot.subtitle   = element_text(size = 9, colour = "grey40"))
+
+print(p_input)
+ggsave(file.path(fig_dir, "flaviLib_input_accessions_cm.pdf"),
+       p_input, width = 8, height = 4.5)
+ggsave(file.path(fig_dir, "flaviLib_input_accessions_cm.png"),
+       p_input, width = 8, height = 4.5, dpi = 300)
+```

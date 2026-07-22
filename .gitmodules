@@ -1,0 +1,3 @@
+[submodule "flaviLib"]
+	path = flaviLib
+	url = git@github.com:jgezelle/flaviLib.git

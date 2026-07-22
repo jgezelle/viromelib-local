@@ -1,0 +1,329 @@
+---
+title: "CM distributions - viromeLib (Flaviviridae)"
+output: html_notebook
+---
+
+```{r setup, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+library(patchwork)
+
+knitr::opts_knit$set(root.dir = "~/Desktop/viromelib")
+```
+
+```{r paths}
+ROOT     <- "~/Desktop/viromelib"
+csv_path <- file.path(ROOT, "work/123_peaks_annotated.csv")
+TBLOUT   <- file.path(ROOT, "work/06_infernal/tblout")
+fig_dir  <- file.path(ROOT, "work/flaviOUT/figures")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+TBLS <- c(
+  "cl1a xrRNA" = file.path(TBLOUT, "CL_Class_1a_xrRNA_final.cm.tbl"),
+  "cl1b xrRNA" = file.path(TBLOUT, "CL_Class_1b_xrRNA_final.cm.tbl"),
+  "cl2 xrRNA"  = file.path(TBLOUT, "CL_Class_2_xrRNA_final.cm.tbl")
+)
+
+missing <- TBLS[!file.exists(TBLS)]
+if (length(missing) > 0)
+  stop("Missing tblout files — run cmsearch first:\n",
+       paste(" ", missing, collapse = "\n"))
+
+# Thresholds
+MIN_PVALUE <- 1e-10
+MIN_SF     <- 0.2
+
+# Only include significant hits (inc == "!"); set FALSE to include marginal "?"
+SIG_ONLY <- TRUE
+
+CM_LEVELS  <- c("cl1a xrRNA", "cl1b xrRNA", "cl2 xrRNA", "Unannotated")
+CM_COLOURS <- c(
+  "cl1a xrRNA"  = "#378ADD",
+  "cl1b xrRNA"  = "#1D9E75",
+  "cl2 xrRNA"   = "#D85A30",
+  "Unannotated" = "#B4B2A9"
+)
+
+CSV_CM_COLS <- list(
+  "cl1a xrRNA" = "CL_Class_1a_xrRNA_final.cm_hit",
+  "cl1b xrRNA" = "CL_Class_1b_xrRNA_final.cm_hit",
+  "cl2 xrRNA"  = "CL_Class_2_xrRNA_final.cm_hit"
+)
+```
+
+---
+
+## 1. Load peaks CSV and identify Flaviviridae accessions
+
+Note: "Unannotated" genus includes sequences not formally assigned to a genus
+(insect-specific flaviviruses etc.) plus "Anopheles flavivirus Liberia/2013",
+which is a species-level NCBI label rather than a true genus designation.
+
+```{r load_csv}
+raw <- read.csv(csv_path, stringsAsFactors = FALSE)
+
+cat("Total peaks in CSV:      ", nrow(raw), "\n")
+cat("Total unique accessions: ", n_distinct(raw$accession), "\n\n")
+
+flavi_meta <- raw %>%
+  filter(family == "Flaviviridae") %>%
+  select(accession, genus, species) %>%
+  distinct() %>%
+  mutate(genus = ifelse(
+    is.na(genus) | genus == "" | genus == "Anopheles flavivirus Liberia/2013",
+    "Unannotated", genus
+  ))
+print(count(flavi_meta, genus, sort = TRUE))
+
+cat("\nUnannotated genus — species-level identities:\n")
+flavi_meta %>%
+  filter(genus == "Unannotated") %>%
+  select(accession, species) %>%
+  print(n = Inf)
+```
+
+---
+
+## 2. Parse cmsearch tblout files
+
+cmsearch was run separately in conda env before knitting. tblout column 16 = E-value, 17 = inc ("!" significant, "?" marginal).
+
+```{r parse_tblout}
+read_tblout <- function(path, cm_label) {
+  lines <- readLines(path)
+  lines <- lines[!startsWith(lines, "#") & nchar(trimws(lines)) > 0]
+  if (length(lines) == 0) return(NULL)
+  do.call(rbind, lapply(lines, function(l) {
+    p <- strsplit(trimws(l), "\\s+")[[1]]
+    data.frame(
+      accession = p[1],
+      E_value   = as.numeric(p[16]),
+      score     = as.numeric(p[15]),
+      inc       = p[17],
+      cm_class  = cm_label,
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+cm_all <- do.call(rbind, mapply(read_tblout, TBLS, names(TBLS),
+                                SIMPLIFY = FALSE))
+
+cat("All cmsearch hits (all sequences, ! = significant, ? = marginal):\n")
+print(with(cm_all, table(cm_class, inc)))
+```
+
+---
+
+## 3. Input: CM annotation of Flaviviridae accessions
+
+Each accession assigned to the CM class with the best (lowest) E-value across
+all three models. `SIG_ONLY = TRUE` uses only `!` hits.
+
+```{r input_cm}
+cm_flavi <- cm_all %>%
+  filter(accession %in% flavi_meta$accession) %>%
+  { if (SIG_ONLY) filter(., inc == "!") else . }
+
+# Per accession: best (lowest) E-value across all CMs
+cm_best <- cm_flavi %>%
+  group_by(accession) %>%
+  slice_min(E_value, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Join to full accession list; unmatched = Unannotated
+acc_input <- flavi_meta %>%
+  left_join(cm_best %>% select(accession, cm_class, E_value),
+            by = "accession") %>%
+  mutate(
+    cm_class = ifelse(is.na(cm_class), "Unannotated", cm_class),
+    cm_class = factor(cm_class, levels = CM_LEVELS)
+  )
+
+# Genus order by total accessions descending (used for both plots)
+genus_order <- acc_input %>%
+  count(genus, sort = TRUE) %>%
+  pull(genus)
+
+cat("=== INPUT: CM annotation (n =", nrow(acc_input), "accessions) ===\n\n")
+
+input_cm_totals <- count(acc_input, cm_class) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+print(input_cm_totals)
+write.csv(input_cm_totals,
+          file.path(fig_dir, "viromeLib_flavi_input_cm_totals.csv"),
+          row.names = FALSE)
+
+unann_total <- input_cm_totals %>% filter(cm_class == "Unannotated")
+cat(sprintf("\n%d of %d input accessions (%.1f%%) have no CM hit (Unannotated)\n",
+            unann_total$n, sum(input_cm_totals$n), unann_total$pct))
+
+input_cm_by_genus <- acc_input %>%
+  count(genus, cm_class) %>%
+  pivot_wider(names_from = cm_class, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  arrange(desc(Total))
+cat("\nBy genus:\n")
+print(input_cm_by_genus, n = Inf)
+write.csv(input_cm_by_genus,
+          file.path(fig_dir, "viromeLib_flavi_input_cm_by_genus.csv"),
+          row.names = FALSE)
+```
+
+---
+
+## 4. Output: filtered and deduplicated stall sites
+
+`peak_position_id` = `accession|stall_position` (feature-relative). Rows
+sharing the same `peak_position_id` are the same stall on different overlapping
+tiles — keep the one with the best (lowest) `meta_pvalue`.
+
+```{r output_stalls}
+flavi_all <- raw %>%
+  filter(family == "Flaviviridae") %>%
+  mutate(genus = ifelse(
+    is.na(genus) | genus == "" | genus == "Anopheles flavivirus Liberia/2013",
+    "Unannotated", genus
+  ))
+
+flavi_filt <- flavi_all %>%
+  filter(
+    meta_pvalue       <= MIN_PVALUE,
+    median_treated_sf >= MIN_SF
+  ) %>%
+  arrange(meta_pvalue) %>%
+  distinct(peak_position_id, .keep_all = TRUE) %>%
+  rowwise() %>%
+  mutate(
+    cm_class = {
+      evals <- c(
+        "cl1a xrRNA" = .data[[CSV_CM_COLS[["cl1a xrRNA"]]]],
+        "cl1b xrRNA" = .data[[CSV_CM_COLS[["cl1b xrRNA"]]]],
+        "cl2 xrRNA"  = .data[[CSV_CM_COLS[["cl2 xrRNA"]]]]
+      )
+      evals <- evals[!is.na(evals)]
+      if (length(evals) == 0) "Unannotated" else names(which.min(evals))
+    }
+  ) %>%
+  ungroup() %>%
+  mutate(
+    cm_class = factor(cm_class, levels = CM_LEVELS),
+    genus    = factor(genus, levels = genus_order)
+  )
+
+cat("=== OUTPUT: filtering summary ===\n")
+cat("Flaviviridae rows unfiltered:      ", nrow(flavi_all), "\n")
+cat("After p <=", MIN_PVALUE, "and sf >=", MIN_SF, ":",
+    nrow(filter(flavi_all, meta_pvalue <= MIN_PVALUE,
+                median_treated_sf >= MIN_SF)), "\n")
+cat("After dedup (unique stall sites):  ", nrow(flavi_filt), "\n")
+cat("Accessions with >=1 stall:         ", n_distinct(flavi_filt$accession), "\n\n")
+
+output_cm_totals <- count(flavi_filt, cm_class) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+print(output_cm_totals)
+write.csv(output_cm_totals,
+          file.path(fig_dir, "viromeLib_flavi_output_cm_totals.csv"),
+          row.names = FALSE)
+
+unann_total <- output_cm_totals %>% filter(cm_class == "Unannotated")
+cat(sprintf("\n%d of %d stall sites (%.1f%%) have no CM hit (Unannotated)\n",
+            unann_total$n, sum(output_cm_totals$n), unann_total$pct))
+
+output_cm_by_genus <- flavi_filt %>%
+  count(genus, cm_class) %>%
+  pivot_wider(names_from = cm_class, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  arrange(desc(Total))
+cat("\nBy genus:\n")
+print(output_cm_by_genus, n = Inf)
+write.csv(output_cm_by_genus,
+          file.path(fig_dir, "viromeLib_flavi_output_cm_by_genus.csv"),
+          row.names = FALSE)
+
+cat("\nPer-accession stall counts:\n")
+stalls_per_acc <- flavi_filt %>%
+  count(accession, genus, cm_class, name = "n_stalls") %>%
+  arrange(desc(n_stalls))
+print(stalls_per_acc, n = Inf)
+write.csv(stalls_per_acc,
+          file.path(fig_dir, "viromeLib_flavi_output_stalls_per_accession.csv"),
+          row.names = FALSE)
+```
+
+---
+
+## 5. Figures
+
+### 5a. Input: accessions per genus coloured by CM class
+
+```{r fig_input, fig.width = 6.5, fig.height = 4}
+p_input <- acc_input %>%
+  count(genus, cm_class) %>%
+  mutate(genus = factor(genus, levels = genus_order)) %>%
+  ggplot(aes(x = genus, y = n, fill = cm_class)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = CM_COLOURS, name = "CM class", drop = FALSE) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08)),
+                     breaks = scales::pretty_breaks()) +
+  labs(
+    title = paste0("Input: ", nrow(flavi_meta),
+                   " Flaviviridae accessions — cmsearch CM annotation"),
+    x = NULL, y = "Accessions"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x     = element_text(angle = 35, hjust = 1),
+        legend.position = "right",
+        plot.title      = element_text(size = 10))
+
+print(p_input)
+ggsave(file.path(fig_dir, "input_flaviviridae_accessions_cm.pdf"),
+       p_input, width = 6.5, height = 4)
+ggsave(file.path(fig_dir, "input_flaviviridae_accessions_cm.png"),
+       p_input, width = 6.5, height = 4, dpi = 300)
+```
+
+### 5b. Output: stall sites per genus coloured by CM class
+
+```{r fig_output, fig.width = 6.5, fig.height = 4}
+p_output <- flavi_filt %>%
+  count(genus, cm_class) %>%
+  mutate(genus = factor(genus, levels = genus_order)) %>%
+  ggplot(aes(x = genus, y = n, fill = cm_class)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = CM_COLOURS, name = "CM class", drop = FALSE) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08)),
+                     breaks = scales::pretty_breaks()) +
+  labs(
+    title = paste0("Output: ", nrow(flavi_filt),
+                   " stall sites (p \u2264 ", MIN_PVALUE,
+                   ", sf \u2265 ", MIN_SF, ") — CM class"),
+    x = NULL, y = "Stall sites"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x     = element_text(angle = 35, hjust = 1),
+        legend.position = "right",
+        plot.title      = element_text(size = 10))
+
+print(p_output)
+ggsave(file.path(fig_dir, "output_flaviviridae_stalls_cm.pdf"),
+       p_output, width = 6.5, height = 4)
+ggsave(file.path(fig_dir, "output_flaviviridae_stalls_cm.png"),
+       p_output, width = 6.5, height = 4, dpi = 300)
+```
+
+### 5c. Combined panel
+
+```{r fig_combined, fig.width = 13, fig.height = 4}
+p_combined <- (p_input + p_output) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+print(p_combined)
+ggsave(file.path(fig_dir, "flaviviridae_input_output_cm.pdf"),
+       p_combined, width = 13, height = 4)
+ggsave(file.path(fig_dir, "flaviviridae_input_output_cm.png"),
+       p_combined, width = 13, height = 4, dpi = 300)
+```

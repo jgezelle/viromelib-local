@@ -1,0 +1,305 @@
+---
+title: "viromelib"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+# Methods: Viral family composition (reads-based)
+### Inputs
+`PASS CSV` (r0366, combined PCR reps):
+`…/fullacc/250828-r0366-X-PCRreps.COMBINED.PASS.recalc.csv`
+
+`PASS CSV` (r0368):
+`…/fullacc/250904-r0368-X-01-A3405_filtered.simple.abs50.bgx4.PASS.csv`
+
+Each PASS CSV contains at least these columns: *accession,family,genus,total_MQ30,….*
+
+### Preprocessing (r0366 set of 3 PCR replicates)
+  - Merge PASS CSVs from the three r0366 PCR replicates (technical replicates, same library): mergePASScsv.py 
+  - aggregates by accession:
+    - total_MQ30 → sum across replicates
+    - family/genus → first non-empty (should agree)
+    - peak positions → union (dedup)
+    - background stats → weighted averages / totals (see script header)
+  - Recompute peak heights from the summed bedGraph (faithful to the combined signal):
+  - `mergePeakcalc.py` fills the peak_heights column by looking up each peak_positions site in the combined bedGraph.
+Output: `250828-r0366-X-PCRreps.COMBINED.PASS.recalc.csv` (now behaves like a per-sample PASS CSV)
+
+
+### Family fractions CSV (reads-based)
+  - summarize each PASS CSV (in this case, 2) into a long-format table with one row per (sample, family):
+  - value = sum of total_MQ30 reads for all accessions in that family (within the sample)
+    - fraction = value / sum(value) within that sample (so fractions per sample sum to 1.0)
+
+  - Run this for the two samples, r0366_combined and r0368, then row-bind into:
+    - family_fractions.ALL.csv with columns: sample,family,value,fraction.
+    - Row-binding just stacks the two per-sample tables; doesn't average or sum across samples. Each bar is already 100% normalized within its own sample.
+    
+  
+```{r}
+# ---------- Setup ----------
+# One-time installs 
+# install.packages(c("tidyverse","scales","viridis"))
+
+library(tidyverse)  # ggplot2, readr, dplyr, etc.
+library(scales)     # percent_format
+library(viridis)    # colorblind-safe palettes
+```
+
+
+```{r}
+# Location of the combined long CSV (copied locally after familyFractions.py script)
+fullacc_dir <- "/Users/jeaninegezelle/Desktop/viromelib/fullacc"
+ff <- readr::read_csv(file.path(fullacc_dir, "family_fractions.ALL.csv"), show_col_types = FALSE)
+
+# Fix sample order on the x-axis (left→right)
+ff$sample <- factor(ff$sample, levels = c("r0366_combined","r0368"))
+```
+
+
+```{r}
+# ---------- Legend: show overall share across BOTH samples ----------
+# Legend *“overall share”* is read-weighted across samples (sum of value per family divided by total value across both samples).
+# Sum over samples to get a global share per family; use it to
+# (1) order legend families and (2) add "(12.3%)" style labels.
+legend_totals <- ff %>%
+  group_by(family) %>%
+  summarise(overall = sum(value), .groups = "drop") %>%
+  mutate(overall_frac = overall / sum(overall))
+
+families <- legend_totals %>% arrange(desc(overall_frac)) %>% pull(family)
+
+legend_labels <- setNames(
+  paste0(
+    families, " (",
+    percent(legend_totals$overall_frac[match(families, legend_totals$family)], accuracy = 0.1),
+    ")"
+  ),
+  families
+)
+```
+
+### pick the color palette:
+```{r}
+# High-contrast, colorblind-safe palette: 
+
+# pal <- setNames(viridis(length(families), option = "inferno"), families)
+# or 
+# pal <- setNames(scales::hue_pal(l=65, c = 100) (length(families)),families) # hue_pal instead, hue jumps instead of gradients 
+# or
+# pal <- setNames(viridis(length(families), option = "turbo"), families) # viridis but with turbo mode for contrast
+
+# or
+# for colors, highlight only the top families, keep others softer, but still diff colors
+top_k <- 8
+pal_top   <- setNames(scales::hue_pal(l=60,  c=100)(top_k), families[1:top_k])
+pal_rest  <- setNames(scales::hue_pal(l=85, c=35)(length(families)-top_k), families[(top_k+1):length(families)])
+pal <- c(pal_top, pal_rest)
+
+
+# lock factor order for stacking & legend
+ff$family <- factor(ff$family, levels = families)
+```
+
+
+```{r}
+# ----------labels ----------
+# Print % labels inside segments ≥3% so small slivers don’t get cluttered
+label_df <- ff %>%
+  mutate(lbl = if_else(fraction >= 0.03, percent(fraction, accuracy = 1), ""))
+# Per-sample total reads (to print under each bar)
+totals_df <- ff %>%
+  group_by(sample) %>%
+  summarise(total_reads = sum(value), .groups = "drop") %>%
+  mutate(label = paste0("n = ", scales::comma(total_reads)),
+         y = -0.06)  # vertical offset below 0 (tweak if needed)
+
+```
+
+
+```{r}
+# ---------- Plot ----------
+p <- ggplot(ff, aes(x = sample, y = fraction, fill = family)) +
+  # Bars: wider width & thin white edges for separation
+  geom_col(width = 0.95, color = "white", linewidth = 0.3) +
+  # In-bar % labels
+  geom_text(
+    data = label_df,
+    aes(label = lbl),
+    position = position_stack(vjust = 0.5),
+    size = 3, color = "white", lineheight = 0.9
+  ) +
+  # y-axis as percent; tiny top padding so labels don't touch the frame
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.03))) +
+  # Custom legend: families ordered by global share, label shows "(xx.x%)"
+  scale_fill_manual(values = pal, breaks = families, labels = legend_labels,
+                    name = "Family (overall share)") +
+  labs(x = NULL, y = "Fraction of total_MQ30") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    # Diagonal x labels for extra space
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, margin = margin(t = 6)),
+    plot.margin  = margin(t = 10, r = 12, b = 24, l = 12)
+  )
+
+print(p)
+```
+
+
+```{r}
+# ---------- Save ----------
+ggsave(file.path(fullacc_dir, "family_fractions_reads.pdf"), p, width = 8.5, height = 4.5)
+ggsave(file.path(fullacc_dir, "family_fractions_reads.png"), p, width = 8.5, height = 4.5, dpi = 300)
+
+```
+
+
+### OLD WORKFLOW IGNORE
+```{r}
+install.packages(c("tidyverse","scales","viridis","patchwork"))
+library(tidyverse)  # ggplot2, readr, dplyr, tidyr
+library(scales)
+library(viridis)
+library(patchwork)
+```
+
+```{r}
+fullacc_dir <- "/Users/jeaninegezelle/Desktop/viromelib/fullacc"
+ff <- readr::read_csv(file.path(fullacc_dir, "family_fractions.ALL.csv"), show_col_types=FALSE)
+
+# order bars left→right
+ff$sample <- factor(ff$sample, levels = c("r0366_combined","r0368"))
+
+# legend labels = overall share across all samples (still using reads)
+legend_totals <- ff %>% group_by(family) %>%
+  summarise(overall = sum(value), .groups="drop") %>%
+  mutate(overall_frac = overall / sum(overall))
+families <- legend_totals %>% arrange(desc(overall_frac)) %>% pull(family)
+labels   <- setNames(paste0(families, " (", percent(legend_totals$overall_frac[match(families, legend_totals$family)], accuracy=0.1), ")"), families)
+pal      <- setNames(viridis(length(families), option="inferno"), families)
+
+ff$family <- factor(ff$family, levels = families)
+
+# Inside-bar label threshold; inside-bar % labels
+label_df <- ff %>% mutate(lbl = if_else(fraction >= 0.03, percent(fraction, accuracy=1), ""))
+```
+
+
+```{r}
+p <- ggplot(ff, aes(x=sample, y=fraction, fill=family)) +
+  geom_col(width=0.95, color="white", linewidth=0.3) +
+  geom_text(data=label_df, aes(label=lbl), position=position_stack(vjust=0.5),
+            size=3, color="white") +
+  scale_y_continuous(labels=percent_format(accuracy=1), expand=expansion(mult=c(0,.03))) +
+  scale_fill_manual(values=pal, breaks=families, labels=labels, name="Family (overall share)") +
+  labs(x=NULL, y="Fraction of total_MQ30") +
+  theme_bw(base_size=12) +
+  theme(
+  panel.grid.major.x = element_blank(),
+  axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, margin = margin(t = 6)),
+  plot.margin = margin(t = 10, r = 12, b = 24, l = 12)
+)
+
+print(p)
+
+```
+
+## this block includes script to make the family fractions plot csv - *not used* - since already had .csv from python script$ROOT/scripts/familyFractions.py
+
+```{r}
+# If needed once: install.packages(c("tidyverse","scales","viridis"))
+library(tidyverse)
+library(scales)
+library(viridis)
+
+# ---- paths (edit if needed) ----
+fullacc_dir <- "/Users/jeaninegezelle/Desktop/viromelib/fullacc"
+pass_paths <- c(
+  r0366_combined = file.path(fullacc_dir, "250828-r0366-X-PCRreps.COMBINED.PASS.recalc.csv"),
+  r0368          = file.path(fullacc_dir, "250904-r0368-X-01-A3405_filtered.simple.abs50.bgx4.PASS.csv")
+)
+stopifnot(all(file.exists(pass_paths)))
+
+# ---- helper: build long table by metric ----
+make_family_df <- function(paths, metric = c("reads","count")) {
+  metric <- match.arg(metric)
+  purrr::imap_dfr(paths, function(pth, sample_label) {
+    df <- readr::read_csv(pth, show_col_types = FALSE)
+    df <- df %>% mutate(family = if_else(is.na(family) | family=="", "Unknown", family))
+    if (metric == "reads") {
+      if (!"total_MQ30" %in% names(df)) stop("PASS CSV lacks total_MQ30 for metric='reads'")
+      out <- df %>%
+        group_by(family) %>%
+        summarise(value = sum(as.numeric(total_MQ30), na.rm = TRUE), .groups="drop")
+    } else {
+      out <- df %>%
+        count(family, name = "value") %>%
+        mutate(value = as.numeric(value))
+    }
+    out %>%
+      mutate(sample = sample_label) %>%
+      group_by(sample) %>%
+      mutate(fraction = value / sum(value)) %>%
+      ungroup()
+  })
+}
+
+# ---- choose metric: "reads" (abundance) or "count" (accessions) ----
+metric <- "reads"  # change to "count" if you prefer richness
+ff <- make_family_df(pass_paths, metric = metric)
+
+# ---- legend labels show overall share (across BOTH samples) ----
+legend_totals <- ff %>%
+  group_by(family) %>%
+  summarise(overall = sum(value), .groups="drop") %>%
+  mutate(overall_frac = overall / sum(overall))
+
+families <- legend_totals %>% arrange(desc(overall_frac)) %>% pull(family)
+legend_labels <- setNames(
+  paste0(families, "  (", percent(legend_totals$overall_frac[match(families, legend_totals$family)], accuracy = 0.1), ")"),
+  families
+)
+
+# consistent colors
+pal <- setNames(viridis(length(families), option = "D"), families)
+
+# order samples on x-axis
+ff$sample <- factor(ff$sample, levels = names(pass_paths))
+ff$family <- factor(ff$family, levels = families)
+
+# (optional) inside-bar % labels per sample (hide very tiny slivers)
+label_df <- ff %>%
+  mutate(lbl = if_else(fraction >= 0.03, percent(fraction, accuracy = 1), ""))
+
+p_family <- ggplot(ff, aes(x = sample, y = fraction, fill = family)) +
+  geom_col(width = 0.8, color = "white", linewidth = 0.2) +
+  geom_text(data = label_df, aes(label = lbl), position = position_stack(vjust = 0.5),
+            size = 3, color = "white", lineheight = 0.9) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), expand = expansion(mult = c(0, .02))) +
+  scale_fill_manual(values = pal, breaks = families, labels = legend_labels, name = "Family (overall share)") +
+  labs(x = NULL, y = ifelse(metric=="reads","Fraction of total_MQ30","Fraction of accessions")) +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major.x = element_blank(),
+        legend.key.height = unit(0.5, "cm"),
+        legend.title = element_text(size = 11),
+        legend.text  = element_text(size = 10))
+
+print(p_family)
+
+# save
+ggsave(file.path(fullacc_dir, paste0("family_fractions_", metric, ".pdf")), p_family, width = 7, height = 4)
+ggsave(file.path(fullacc_dir, paste0("family_fractions_", metric, ".png")), p_family, width = 7, height = 4, dpi = 300)
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

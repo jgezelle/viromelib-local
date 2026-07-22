@@ -1,0 +1,47 @@
+# system and editor junk
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
+__pycache__/
+
+# outputs - none of these
+*.csv
+*.tsv
+*.txt
+*.tbl
+*.tiff
+*.tif
+*.pdf
+*.svg
+*.png
+*.jpeg
+*.jpg
+*.eps
+*.ai
+*.nb.html
+*.xlsx
+*.xls
+*.html
+*.xml
+*.json
+*.bedGraph
+*.bam
+*.bam.bai
+*.fa
+*.fasta
+*.fastq
+*.fa.fai
+*.fa.ssi
+~$*
+
+# keep scripts and models
+!*.cm
+!*.stk
+!*.sto
+!*.rmd
+!*.Rmd
+!*.R
+!*.py
+!*.md
+!*.gitmodules
