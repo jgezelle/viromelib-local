@@ -1,0 +1,219 @@
+---
+title: "CM class distribution among passing hits — 260807 75x75 trueRef"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+
+knitr::opts_knit$set(root.dir = "~/Desktop/viromelib/figures/flaviLib")
+```
+
+## Config
+
+```{r paths}
+csv10 <- "inputs/flaviLib_10mM_1234_peaks_annotated20260826_allCMs.csv"
+csv01 <- "inputs/flaviLib_01mM_1234_peaks_annotated20260826_allCMs.csv"
+fig_dir <- "plots/CMdist/20260826_allCMs"
+dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
+
+# This run only searched classes 1a, 1b, 2 (3 and 4 skipped -- expected
+# absent from this library, see project notes). Priority order for
+# assigning a single class label when multiple hit (1a > 1b > 2).
+CM_COLS <- c(
+  "Class 1a" = "CL_Class_1a_xrRNA_final.cm_hit",
+  "Class 1b" = "CL_Class_1b_xrRNA_final.cm_hit",
+  "Class 2"  = "CL_Class_2_xrRNA_final.cm_hit",
+  "Dumbbell" = "dumbbell_RF00525.cm_hit"
+)
+
+# Combined across 4 replicates (--labels R1 R2 R3 R4 in combine_replicates.py).
+# A site needs to have passed in at least this many replicates to count as
+# "detected" here -- adjust and re-knit if a different bar is wanted.
+MIN_REPS_PASSING <- 2
+```
+
+## Load & classify
+
+```{r load}
+d10 <- read_csv(csv10, show_col_types = FALSE) %>% mutate(condition = "10 mM Mg")
+d01 <- read_csv(csv01, show_col_types = FALSE) %>% mutate(condition = "1 mM Mg")
+
+dat <- bind_rows(d10, d01) %>%
+  mutate(
+    condition = factor(condition, levels = c("10 mM Mg", "1 mM Mg")),
+    family = if_else(is.na(family) | family == "" | family == "Unannotated",
+                      "Unannotated", family),
+    genus  = if_else(is.na(genus) | genus == "" | genus == "Unannotated",
+                      "Unannotated", genus)
+  )
+
+cat("Total candidate sites (10 mM):", nrow(d10), "\n")
+cat("Total candidate sites (1 mM): ", nrow(d01), "\n")
+```
+
+```{r classify}
+# priority-ordered CM class assignment, same convention as fig1A_v4_addCM.Rmd
+dat <- dat %>%
+  mutate(
+    cm_class = case_when(
+      !is.na(.data[[CM_COLS["Class 1a"]]])   ~ "cl1a xrRNA",
+      !is.na(.data[[CM_COLS["Class 1b"]]])   ~ "cl1b xrRNA",
+      !is.na(.data[[CM_COLS["Class 2"]]])    ~ "cl2 xrRNA",
+      !is.na(.data[[CM_COLS["Dumbbell"]]])   ~ "Dumbbell",
+      TRUE                                    ~ "Unclassified"
+    ),
+    cm_class = factor(cm_class,
+                       levels = c("cl1a xrRNA", "cl1b xrRNA", "cl2 xrRNA", "Dumbbell", "Unclassified"))
+  )
+```
+
+## Restrict to passing sites, one row per accession
+
+```{r filter-passing}
+passing <- dat %>%
+  filter(n_reps_passing >= MIN_REPS_PASSING)
+
+cat("Passing sites (n_reps_passing >=", MIN_REPS_PASSING, "):", nrow(passing), "\n")
+
+# one row per accession per condition -- keep its best-supported passing site
+det_accs <- passing %>%
+  group_by(condition, accession) %>%
+  slice_max(n_reps_passing, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+cat("Unique detected accessions:\n")
+det_accs %>% count(condition)
+```
+
+## CM class distribution
+
+```{r cm_summary}
+det_accs %>%
+  count(condition, cm_class) %>%
+  pivot_wider(names_from = condition, values_from = n, values_fill = 0)
+```
+
+```{r palette}
+cm_colors <- c(
+  "cl1a xrRNA"  = "#1A5FA8",
+  "cl1b xrRNA"  = "#4EA8DE",
+  "cl2 xrRNA"   = "#F4A11D",
+  "Dumbbell"    = "#5DAD6F",
+  "Unclassified" = "#C8C8C8"
+)
+```
+
+## Figure — CM class distribution (counts)
+
+```{r fig_counts, fig.width=7, fig.height=5}
+p_counts <- det_accs %>%
+  count(condition, cm_class) %>%
+  ggplot(aes(x = cm_class, y = n, fill = cm_class)) +
+  geom_col(width = 0.7, colour = "black", linewidth = 0.2) +
+  facet_wrap(~condition, ncol = 2) +
+  scale_fill_manual(values = cm_colors, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title = "CM class distribution among detected accessions",
+    subtitle = paste0("n_reps_passing >= ", MIN_REPS_PASSING, " of 4 replicates"),
+    x = NULL,
+    y = "Number of accessions"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.background = element_rect(fill = "#F0F0F0", colour = NA),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(colour = "grey40", size = 10)
+  )
+
+ggsave(file.path(fig_dir, "cm_class_distribution_counts.pdf"), p_counts, width = 7, height = 5)
+ggsave(file.path(fig_dir, "cm_class_distribution_counts.svg"), p_counts, width = 7, height = 5)
+p_counts
+```
+
+## Figure — CM class distribution (proportion)
+
+```{r fig_prop, fig.width=6, fig.height=5}
+p_prop <- det_accs %>%
+  count(condition, cm_class) %>%
+  ggplot(aes(x = condition, y = n, fill = cm_class)) +
+  geom_col(position = "fill", width = 0.6, colour = "black", linewidth = 0.2) +
+  scale_fill_manual(values = cm_colors, name = "CM class") +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                      expand = expansion(mult = c(0, 0.02))) +
+  labs(
+    title = "CM class composition among detected accessions",
+    subtitle = paste0("n_reps_passing >= ", MIN_REPS_PASSING, " of 4 replicates"),
+    x = NULL,
+    y = "Proportion of accessions"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(colour = "grey40", size = 10)
+  )
+
+ggsave(file.path(fig_dir, "cm_class_distribution_proportion.pdf"), p_prop, width = 6, height = 5)
+ggsave(file.path(fig_dir, "cm_class_distribution_proportion.svg"), p_prop, width = 6, height = 5)
+p_prop
+```
+
+## By genus (top genera only)
+
+```{r fig_genus, fig.width=13, fig.height=6}
+MIN_GENUS_N <- 5
+
+genus_keep <- det_accs %>% count(genus) %>% filter(n >= MIN_GENUS_N) %>% pull(genus)
+genus_order <- det_accs %>% filter(genus %in% genus_keep) %>%
+  count(genus) %>% arrange(desc(n)) %>% pull(genus)
+
+genus_summary <- det_accs %>%
+  filter(genus %in% genus_keep) %>%
+  mutate(genus = factor(genus, levels = genus_order)) %>%
+  count(genus, cm_class, condition) %>%
+  complete(genus, cm_class, condition, fill = list(n = 0))
+
+p_genus <- ggplot(genus_summary, aes(x = genus, y = n, fill = cm_class)) +
+  geom_col(width = 0.75, colour = NA) +
+  facet_wrap(~condition, ncol = 2) +
+  scale_fill_manual(values = cm_colors, name = "CM class") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title = "CM class by viral genus",
+    subtitle = paste0("Genera with >= ", MIN_GENUS_N, " detected accessions | n_reps_passing >= ", MIN_REPS_PASSING),
+    x = "Viral genus",
+    y = "Number of accessions"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10),
+    strip.background = element_rect(fill = "#F0F0F0", colour = NA),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(colour = "grey40", size = 10)
+  )
+
+ggsave(file.path(fig_dir, "cm_class_by_genus.pdf"), p_genus, width = 13, height = 6)
+ggsave(file.path(fig_dir, "cm_class_by_genus.svg"), p_genus, width = 13, height = 6)
+p_genus
+```
+
+## Notes
+
+- `MIN_REPS_PASSING = 2` (of 4) is a starting assumption, not a value carried
+  over from prior analysis -- the earlier 3-replicate pipeline
+  (`fig1A_v4_addCM.Rmd`) used `MIN_REPS = 2` of 3, a stricter *fraction*
+  (67%) than 2-of-4 (50%). Consider raising to 3 of 4 if you want a
+  comparably strict bar, or keep 2 of 4 if you'd rather match the prior
+  *absolute* replicate count.
+- CM classes 3 and 4 were not searched in this run (skipped per project
+  decision -- see run notes) and are not part of the classification here.
+  If they're added later, extend `CM_COLS` and the `cm_class` factor
+  levels accordingly.
+- Class assignment is priority-ordered (1a > 1b > 2); an accession with
+  hits in multiple classes is labelled by the highest-priority one only.

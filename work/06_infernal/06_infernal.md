@@ -359,13 +359,7 @@ cat .gitmodules  # should show the submodule entry
 ```
 
 reorganize directory then git add: 
-```bash
-git add .gitignore
-git add .gitmodules
-git add flaviLib
-git add htpmut/
-git add work/
-```
+
 ```bash
 # remove 
 git rm -f -r --cached .
@@ -378,7 +372,19 @@ git add work/*.md
 git add work/*.Rmd
 git add work/*.rmd
 git add htpmut/
-git status --short | grep "^A"
+
 # check 
 git status --short | grep "^A"
+```
+
+### finally ready to commit: 
+```bash
+git commit -m "initial commit with infernal pipeline, CM files, analysis notebooks"
+
+# create the repo on github.com first if not done yet, then:
+git remote add origin git@github.com:jgezelle/viromelib-local.git
+
+git branch -M main
+git push -u origin main
+
 ```

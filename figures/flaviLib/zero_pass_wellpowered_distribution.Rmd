@@ -1,0 +1,219 @@
+---
+title: "Zero-passing-stall accession analysis (control-depth corrected)"
+subtitle: "260807 75x75 run — trueRef, G6-dedup, calibrated NB null, SF>=0.3"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+knitr::opts_knit$set(root.dir = "~/Desktop/viromelib/figures/flaviLib")
+library(tidyverse)
+library(scales)
+library(readxl)
+
+# every plot chunk below is saved as both .svg and .pdf, in addition to
+# rendering inline in the knitted HTML. Output goes to plots/<chunk_label>.svg
+# and plots/<chunk_label>.pdf, using each chunk's label as the filename stem.
+FIG_DIR <- "plots"
+dir.create(FIG_DIR, showWarnings = FALSE)
+
+save_plot <- function(plot, label, width = 8, height = 5) {
+  ggsave(file.path(FIG_DIR, paste0(label, ".svg")), plot = plot,
+         width = width, height = height, device = "svg")
+  ggsave(file.path(FIG_DIR, paste0(label, ".pdf")), plot = plot,
+         width = width, height = height, device = "pdf")
+}
+```
+
+## Load data
+
+Source file: `inputs/zero_pass_accessions_summary_v3_20260826_well-powered.xlsx`.
+This contains **all three depth tiers together** (Underpowered / Ambiguous /
+Well-powered) -- filter explicitly on `depth_tier` rather than assuming the
+file is pre-filtered.
+
+```{r load}
+df <- read_excel("inputs/zero_pass_accessions_summary_v3_20260826_well-powered.xlsx") %>%
+  mutate(
+    depth_tier = factor(
+      depth_tier,
+      levels = c("Underpowered (control <100)",
+                 "Ambiguous (control 100-1000)",
+                 "Well-powered, real digestion (control >=1000)")
+    ),
+    condition = factor(condition, levels = c("10mM", "01mM"))
+  )
+
+glimpse(df)
+```
+
+## Tier counts (all accessions)
+
+```{r tier-counts}
+df %>%
+  count(condition, depth_tier, name = "n_accessions") %>%
+  pivot_wider(names_from = depth_tier, values_from = n_accessions, values_fill = 0)
+```
+
+## The well-powered subset
+
+The scientifically meaningful group: genuinely well-represented in the
+input library (control >=1000 reads at the best tile) that still never
+cleared the stall-calling gates. `treated_to_control_ratio` should always
+be <=1 here (Xrn1 can only remove molecules, never create them) -- values
+>1 elsewhere in the full table come from Underpowered/Ambiguous tiles where
+raw counts are small enough for cross-library depth noise to dominate, and
+are excluded from this analysis by design.
+
+```{r filter-wp}
+wp <- df %>% filter(depth_tier == "Well-powered, real digestion (control >=1000)")
+
+stopifnot(all(wp$treated_to_control_ratio <= 1, na.rm = TRUE))
+
+cat("Well-powered accessions:", nrow(wp), "\n")
+cat("  10mM:", sum(wp$condition == "10mM"), "\n")
+cat("  01mM:", sum(wp$condition == "01mM"), "\n")
+```
+
+## Fail reason within the well-powered tier
+
+```{r fail-reason-bar, fig.width=8, fig.height=5}
+p_fail_reason <- ggplot(wp, aes(x = primary_fail_reason, fill = condition)) +
+  geom_bar(position = "dodge", color = "black", linewidth = 0.2) +
+  labs(
+    title = "Why well-powered accessions still failed to pass",
+    subtitle = "Control reads >=1000 at best tile, but no passing stall",
+    x = "Primary fail reason",
+    y = "Number of accessions",
+    fill = "Condition"
+  ) +
+  theme_minimal(base_size = 12)
+
+save_plot(p_fail_reason, "fail-reason-bar", width = 8, height = 5)
+p_fail_reason
+```
+
+## Distribution of treated_to_control_ratio
+
+The core biological readout for this group: how much of the input
+material actually survived Xrn1 treatment, even among accessions that
+didn't produce a clean passing stall call. Values near 0 = near-total
+digestion; values near 1 = little to no digestion detected.
+
+```{r ratio-hist, fig.width=9, fig.height=5}
+p_ratio_hist <- ggplot(wp, aes(x = treated_to_control_ratio, fill = condition)) +
+  geom_histogram(bins = 30, color = "black", linewidth = 0.2, alpha = 0.8,
+                  position = "identity") +
+  facet_wrap(~condition, ncol = 1) +
+  labs(
+    title = "Fraction of input surviving Xrn1 treatment (well-powered accessions)",
+    subtitle = "treated_to_control_ratio: best-tile treated reads / best-tile control reads",
+    x = "Treated / control read ratio",
+    y = "Number of accessions"
+  ) +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+save_plot(p_ratio_hist, "ratio-hist", width = 9, height = 5)
+p_ratio_hist
+```
+
+```{r ratio-hist-log, fig.width=9, fig.height=5}
+# log scale companion, since the distribution is heavily right-skewed
+# toward near-total digestion
+p_ratio_hist_log <- ggplot(wp %>% filter(treated_to_control_ratio > 0),
+       aes(x = treated_to_control_ratio, fill = condition)) +
+  geom_histogram(bins = 30, color = "black", linewidth = 0.2) +
+  scale_x_log10(labels = label_percent(scale = 100)) +
+  facet_wrap(~condition, ncol = 1) +
+  labs(
+    title = "Fraction of input surviving Xrn1 treatment (log scale)",
+    x = "Treated / control read ratio (log scale)",
+    y = "Number of accessions"
+  ) +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+save_plot(p_ratio_hist_log, "ratio-hist-log", width = 9, height = 5)
+p_ratio_hist_log
+```
+
+## Near-total digestion, still no passing stall
+
+The most mechanistically interesting subgroup: essentially everything was
+destroyed (ratio < 0.01, i.e. >99% of input gone), yet no single position
+accumulated enough reads to clear the absolute stall-read floor (G1).
+Candidates for real-but-spatially-diffuse resistance, or genuinely
+complete digestion with only stochastic noise surviving.
+
+```{r near-total, fig.width=8, fig.height=5}
+near_total <- wp %>% filter(treated_to_control_ratio < 0.01)
+
+cat("Near-total-digestion, still-failing accessions:", nrow(near_total), "\n")
+near_total %>% count(condition, primary_fail_reason)
+```
+
+```{r near-total-table}
+near_total %>%
+  select(condition, accession, treated_to_control_ratio,
+         best_tile_treated_sf, best_tile_stall_reads,
+         primary_fail_reason, genus, species) %>%
+  arrange(treated_to_control_ratio)
+```
+
+## By genus
+
+Worth checking whether well-powered negatives cluster in genera *not*
+expected to carry Xrn1-resistant xrRNAs (e.g. Hepacivirus, Pegivirus,
+Jingmenvirus group) versus Orthoflavivirus, where resistance is the
+expected/established phenomenon. A skew away from Orthoflavivirus here is
+a reassuring consistency check on the pipeline as a whole.
+
+```{r by-genus, fig.width=9, fig.height=6}
+p_by_genus <- wp %>%
+  filter(!is.na(genus), genus != "", genus != "Unannotated") %>%
+  count(condition, genus, sort = TRUE) %>%
+  ggplot(aes(x = fct_reorder(genus, n, .fun = sum), y = n, fill = condition)) +
+  geom_col(position = "dodge", color = "black", linewidth = 0.2) +
+  coord_flip() +
+  labs(
+    title = "Well-powered, negative accessions by genus",
+    x = NULL,
+    y = "Number of accessions",
+    fill = "Condition"
+  ) +
+  theme_minimal(base_size = 12)
+
+save_plot(p_by_genus, "by-genus", width = 9, height = 6)
+p_by_genus
+```
+
+## Export
+
+```{r export}
+write_csv(wp, "well_powered_negative_accessions_final.csv")
+write_csv(near_total, "well_powered_near_total_digestion.csv")
+```
+
+## Notes / caveats
+
+- `depth_tier` is based on **control (untreated) sample** reads at each
+  accession's best-supported tile, not treated-sample reads. Low treated
+  reads can legitimately reflect real, complete Xrn1 digestion (nothing
+  survived to sequence); low control reads mean the fragment was never
+  well-represented in the input library to begin with. Using treated
+  depth as a power proxy would conflate these two very different
+  scenarios.
+- `treated_to_control_ratio` and `best_tile_*` columns are drawn from each
+  accession's single best-supported tile (by control depth), not summed
+  across all its overlapping tiles -- this avoids diluting a real signal
+  by pooling in tiles that never had a stall to begin with.
+- The full source file contains all three tiers (Underpowered / Ambiguous
+  / Well-powered) in one sheet -- this Rmd filters explicitly rather than
+  assuming any pre-filtering, since `treated_to_control_ratio` can exceed
+  1 in the lower tiers purely from cross-library depth noise on small raw
+  counts, and should never be interpreted biologically outside the
+  well-powered tier.

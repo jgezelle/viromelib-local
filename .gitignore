@@ -5,6 +5,15 @@
 .Rproj.user/
 __pycache__/
 
+# whole directories
+data/
+figures/fig1/inputs
+figures/fig1/plots
+figures/flaviLib/plots
+figures/flaviLib/input
+work/
+outputs-sequencefiles/
+
 # outputs - none of these
 *.csv
 *.tsv
