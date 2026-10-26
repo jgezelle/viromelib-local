@@ -1,11 +1,35 @@
 # IGV sessions for top hits 
-### need to use RZ script! 
-#### local download of necessary input files from viromelib: 
 
-### Aug 27, 2026 
-# Received 11_tracks contents from RZ
+#### Aug 27, 2026
+local download of necessary input files
+### Received 11_tracks contents from RZ, copied to work dir as `11_tracks`
+```bash
+ROOT=~/Desktop/viromelib/
+TRACKS=~/Desktop/viromelib/work/11_tracks
+SCRIPTS=~Desktop/viromelib/scripts
 
+```
+```bash
+conda activate viromelib 
+cd $ROOT
 
+    python scripts/make_igv_session.py \\
+        --genome data/refseqs/pilot_library_20260319.uniqueIDs.fa \\
+        --bedgraph work/11_tracks/control_R1.5p.bedgraph \\
+                   work/11_tracks/treated_R1.5p.bedgraph \\
+                   work/11_tracks/control_R2.5p.bedgraph \\
+                   work/11_tracks/treated_R2.5p.bedgraph \\
+                   work/11_tracks/control_R3.5p.bedgraph \\
+                   work/11_tracks/treated_R3.5p.bedgraph \\
+        --bam work/04_align/fs4/*X1*.bam work/04_align/fs4/*R1*.bam \\
+              work/04_align/fs4/*X2*.bam work/04_align/fs4/*R2*.bam \\
+              work/04_align/fs4/*X3*.bam work/04_align/fs4/*R3*.bam \\
+        --gtf work/06_filter_v7/1_peaks.gtf \\
+              work/06_filter_v7/2_peaks.gtf \\
+              work/06_filter_v7/3_peaks.gtf \\
+        --bed work/data/refseqs/pilot_library_20260319.uniqueIDs.bed \\
+        --out 3replicates.xml
+```
 -------
 
 #### Aug 25, 2026

@@ -41,16 +41,16 @@ library(readxl)
 library(svglite)
 
 # ── Config ───────────────────────────────────────────────────────────────────
-INPUT_DIR  <- "~/Desktop/viromelib/figures/fig1/inputs"
+INPUT_DIR  <- "~/Desktop/viromelib/figures/fig1/inputs/20261019_rerun_viromelib_ordered"
 
-FASTA_FILE    <- file.path(INPUT_DIR, "pilot_library_20260319.uniqueIDs.fa")
-CSV_FILE      <- file.path(INPUT_DIR, "virus_stats.csv")
-PRESENCE_FILE <- file.path(INPUT_DIR, "accession_presence_by_sample20260820.csv")
+FASTA_FILE    <- file.path(INPUT_DIR, "pilot_library_20260319.uniqueIDs.ordered.fa")
+CSV_FILE      <- file.path(INPUT_DIR, "virus_taxonomy_261019.csv")
+PRESENCE_FILE <- file.path(INPUT_DIR, "accession_presence_by_sample_261019.csv")
 PEAKS_FILE    <- file.path(INPUT_DIR,
-                  "123_peaks_annotated20260721-apply-cutoffs20260824.xlsx")
-NCBI_FILE     <- file.path(INPUT_DIR, "ncbi_family_counts.csv")
+                  "peaks_annotated.csv")
+NCBI_FILE     <- file.path(INPUT_DIR, "ncbi_family_counts_261019.csv")
 
-OUT_DIR   <- "~/Desktop/viromelib/figures/fig1/plots/20260824/v5"
+OUT_DIR   <- "~/Desktop/viromelib/figures/fig1/plots/20261019"
 OUT_PDF_A <- file.path(OUT_DIR, "fig1a_anyhit.pdf")
 OUT_PDF_B <- file.path(OUT_DIR, "fig1a_cmclass.pdf")
 OUT_SVG_A <- file.path(OUT_DIR, "fig1a_anyhit.svg")
@@ -182,7 +182,7 @@ message(glue("✅ {length(input_accs)} input accessions"))
 ## 5. Output — detected accessions with CM annotation
 
 ```{r load_peaks}
-peaks_raw <- read_excel(PEAKS_FILE, sheet = "123_peaks_annotated") %>%
+peaks_raw <- read_csv(PEAKS_FILE, show_col_types = FALSE) %>%
   mutate(
     acc_clean      = sub("\\.\\d+$", "", sub("\\|.*", "", accession)),
     family         = if_else(is.na(family) | family == "Unannotated",

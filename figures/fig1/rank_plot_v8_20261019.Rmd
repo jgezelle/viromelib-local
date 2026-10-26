@@ -1,0 +1,189 @@
+---
+title: "viromelib — Rank plot (v8, orderedRef)"
+output: html_notebook
+---
+
+Ranks every stall-positive accession by its strongest site and colours by CM class.
+
+Changes from `rank_plot_v7_7_updated20260615`:
+
+- input is **`*.sites_final.csv`** (the gated publication site set, 391 sites / 286 accessions) instead of
+  the raw annotated peak table. The gates are therefore already applied and no filtering happens here.
+- `plain_accession` is used directly; v7 regex-extracted it from `accession`.
+- labels come from **`organism`** (the GenBank name, e.g. "Tick-borne encephalitis virus"). The `species`
+  column is now the ICTV binomial ("Orthoflavivirus encephalitidis") and is unrecognisable.
+- **Class 4 added** to the CM scheme (v7 had 1a/1b/2 and 3 only; the annotation set is five CMs).
+- `TOP_N_LABELS` optionally labels the strongest N accessions in addition to the hand-picked highlights.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggrepel)
+library(svglite)
+```
+
+## Paths
+
+```{r paths}
+INPUT_DIR <- "~/Desktop/viromelib/figures/fig1/inputs/20261019_rerun_viromelib_ordered"
+SITES_CSV <- file.path(INPUT_DIR, "261019_re-run_viromelib_orderedRef_orderedRef.sites_final.csv")
+
+outdir <- "~/Desktop/viromelib/figures/rank/20261019"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+TOP_N_LABELS <- 0        # set e.g. 10 to also label the strongest N accessions
+```
+
+## Highlights and colours
+
+```{r highlights}
+highlight_lookup <- tribble(
+  ~accession,      ~highlight_name,
+  "NC_015843.2",   "Tembusu virus",
+  "NC_012532.1",   "Zika virus",
+  "NC_024077.1",   "SbCNV-5",
+  "NC_034223.1",   "Mogiana tick virus"
+)
+
+CM_COLS <- c(
+  class1a = "CL_Class_1a_xrRNA_final.cm_hit",
+  class1b = "CL_Class_1b_xrRNA_final.cm_hit",
+  class2  = "CL_Class_2_xrRNA_final.cm_hit",
+  class3  = "cl3_NAR_2025.align.mpkadded.edited.confident.dedup.IDcurated.SS_cons.cm_hit",
+  class4  = "cl4.cm_hit"
+)
+
+cm_colors <- c(
+  "class1a" = "#B5179E",
+  "class1b" = "#7209B7",
+  "class2"  = "#3A0CA3",
+  "class3"  = "#1B998B",
+  "class4"  = "#136F63",
+  "no_hit"  = "#CCCCCC"
+)
+cm_labels <- c(
+  "class1a" = "Class 1a", "class1b" = "Class 1b", "class2" = "Class 2",
+  "class3"  = "Class 3",  "class4"  = "Class 4",  "no_hit" = "No hit"
+)
+cm_priority <- c("class1a", "class1b", "class2", "class3", "class4")
+```
+
+## Load and collapse to one row per accession
+
+```{r load_data}
+sites <- read_csv(SITES_CSV, show_col_types = FALSE)
+
+missing_cols <- setdiff(c("plain_accession", "accession", "meta_qvalue"), names(sites))
+stopifnot("sites file is missing expected columns" = length(missing_cols) == 0)
+
+pcol <- if ("meta_pvalue" %in% names(sites)) "meta_pvalue" else "meta_qvalue"
+message(glue::glue("ranking on {pcol}"))
+
+sites <- sites %>%
+  mutate(
+    organism = if ("organism" %in% names(.)) organism else NA_character_,
+    family   = ifelse(is.na(family) | family %in% c("", "nan"), "Unknown", family),
+    pval     = suppressWarnings(as.numeric(.data[[pcol]])),
+    log10p   = -log10(pmax(pval, 1e-300))
+  )
+
+# CM class per site, by priority
+for (k in names(CM_COLS)) {
+  col <- CM_COLS[[k]]
+  sites[[paste0("hit_", k)]] <- if (col %in% names(sites)) {
+    !is.na(sites[[col]]) & as.character(sites[[col]]) != ""
+  } else FALSE
+}
+sites <- sites %>%
+  mutate(cm_class = case_when(
+    hit_class1a ~ "class1a", hit_class1b ~ "class1b", hit_class2 ~ "class2",
+    hit_class3  ~ "class3",  hit_class4  ~ "class4", TRUE ~ "no_hit"
+  ))
+
+# one row per accession: strongest site, and the best CM class seen anywhere on that genome
+df_ranked <- sites %>%
+  group_by(plain_accession) %>%
+  summarise(
+    organism     = first(na.omit(organism)),
+    species      = if ("species" %in% names(sites)) first(na.omit(species)) else NA_character_,
+    family       = first(family),
+    n_sites      = n(),
+    best_log10p  = max(log10p, na.rm = TRUE),
+    best_site_id = if ("site_id" %in% names(sites)) site_id[which.max(log10p)] else NA_character_,
+    best_feature = accession[which.max(log10p)],
+    cm_class = {
+      cls <- cm_class[cm_class != "no_hit"]
+      if (length(cls) == 0) "no_hit" else cm_priority[min(match(cls, cm_priority), na.rm = TRUE)]
+    },
+    .groups = "drop"
+  ) %>%
+  rename(accession = plain_accession) %>%
+  left_join(highlight_lookup, by = "accession") %>%
+  mutate(label_name = coalesce(highlight_name, organism))
+
+message(glue::glue("{nrow(df_ranked)} accessions | {sum(df_ranked$n_sites)} sites"))
+print(table(df_ranked$cm_class))
+message(glue::glue("highlights matched: {sum(!is.na(df_ranked$highlight_name))} of {nrow(highlight_lookup)}"))
+if (any(is.na(df_ranked$organism)))
+  warning(sum(is.na(df_ranked$organism)), " accessions without an organism name — ",
+          "re-run apply_publication_cutoffs.py with --snapshot-manifest")
+```
+
+## Rank plot
+
+```{r rank_plot, fig.width=10, fig.height=8}
+n_acc <- nrow(df_ranked)
+y_max <- max(df_ranked$best_log10p, na.rm = TRUE) * 1.08
+
+df_sorted <- df_ranked %>%
+  arrange(desc(best_log10p)) %>%
+  mutate(
+    rank      = row_number(),
+    frac_rank = (rank - 1) / max(n_acc - 1, 1),
+    cm_class  = factor(cm_class, levels = names(cm_colors))
+  )
+
+label_df <- df_sorted %>%
+  filter(!is.na(highlight_name) | (TOP_N_LABELS > 0 & rank <= TOP_N_LABELS)) %>%
+  mutate(label_text = paste0(label_name, "\n", accession))
+
+rank_plot <- ggplot(df_sorted, aes(x = frac_rank, y = best_log10p)) +
+  geom_point(data = filter(df_sorted, cm_class == "no_hit"),
+             colour = cm_colors[["no_hit"]], size = 1.4, alpha = 0.6) +
+  geom_point(data = filter(df_sorted, cm_class != "no_hit"),
+             aes(fill = cm_class), shape = 21, size = 2.4, alpha = 0.95, stroke = 0) +
+  scale_fill_manual(values = cm_colors, labels = cm_labels, name = "CM class", drop = FALSE) +
+  geom_label_repel(
+    data = label_df, aes(label = label_text),
+    colour = "black", fontface = "bold", size = 3.4,
+    fill = alpha("white", 0.78), label.size = 0.25,
+    label.padding = unit(0.25, "lines"), box.padding = unit(0.5, "lines"),
+    point.padding = unit(0.4, "lines"), max.overlaps = Inf,
+    min.segment.length = 0, segment.colour = "grey40", segment.size = 0.4,
+    direction = "y", nudge_x = 0.10, hjust = 0, force = 5, seed = 42,
+    show.legend = FALSE
+  ) +
+  labs(
+    title = glue::glue("Rank plot — {n_acc} stall-positive accessions, {sum(df_ranked$n_sites)} sites"),
+    subtitle = glue::glue("ordered-reference analysis; ranked on {pcol} of the strongest site per genome"),
+    x = "Fractional rank (0 = strongest)",
+    y = if (pcol == "meta_pvalue") expression(-log[10](p[meta])) else expression(-log[10](q[meta]))
+  ) +
+  scale_x_continuous(limits = c(-0.02, 1.02), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, y_max), expand = c(0, 0)) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title         = element_text(size = 12, face = "bold", hjust = 0.5),
+    plot.subtitle      = element_text(size = 9, colour = "grey40", hjust = 0.5),
+    axis.title         = element_text(size = 11),
+    axis.text          = element_text(size = 10),
+    legend.position    = "right",
+    panel.grid.major.y = element_line(colour = "#F0F0F0", linewidth = 0.3)
+  )
+
+rank_plot
+
+ggsave(file.path(outdir, "01_rank_plot.pdf"), rank_plot, width = 10, height = 8, device = cairo_pdf)
+ggsave(file.path(outdir, "01_rank_plot.svg"), rank_plot, width = 10, height = 8)
+write_csv(df_sorted, file.path(outdir, "rank_table.csv"))
+message("-> ", file.path(outdir, "01_rank_plot.pdf"))
+```

@@ -1,56 +1,211 @@
-# system and editor junk
+# .gitignore for viromelib-local  —  ~/Desktop/viromelib/.gitignore
+# Revised 2026-10-26. Goal: track code, notebooks and documentation; ignore data, large
+# binaries and regenerable figure output.
+#
+
+
+# ── System and editor junk
 .DS_Store
 .Rhistory
 .RData
 .Rproj.user/
 __pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+~$*
 
-# whole directories
+# ── Whole trees that are data, not source
 data/
-figures/fig1/inputs
-figures/fig1/plots
-figures/flaviLib/plots
-figures/flaviLib/input
 work/
+libraryDesign/
 outputs-sequencefiles/
+trash/
 
-# outputs - none of these
+# ── Figure inputs and outputs, at ANY depth in EITHER tree.
+# Pattern-based rather than enumerated, so it keeps working as figure directories are added
+# or renamed. The old file named figures/fig1/inputs and figures/fig1/plots explicitly, which
+# stopped covering anything once rank/, representation/, ncbi_virus_space/ and igv/ appeared.
+# Directories themselves stay walkable so notebooks beside them remain trackable.
+**/inputs/**
+**/plots/**
+!**/inputs/
+!**/plots/
+!**/inputs/**/*.md5
+!**/plots/**/*.md5
+# A figure input manifest IS worth tracking: a clone cannot knit without the inputs, so at
+# minimum it should be able to say exactly which files it is missing.
+
+# ── Tabular data and rendered output, globally. All regenerable from a notebook plus inputs.
+# NOTE *.txt is global, so plain-text documentation disappears silently. Keep documentation
+# in Markdown — *.md is deliberately not ignored anywhere in this file.
 *.csv
 *.tsv
 *.txt
 *.tbl
-*.tiff
-*.tif
+*.json
+*.xml
+*.xlsx
+*.xls
+*.html
+*.nb.html
 *.pdf
 *.svg
 *.png
+*.tiff
+*.tif
 *.jpeg
 *.jpg
 *.eps
 *.ai
-*.nb.html
+
+# ── Sequence, alignment and interval files
+*.fa
+*.fasta
+*.fa.fai
+*.fa.ssi
+*.fai
+*.fastq
+*.fastq.gz
+*.bam
+*.bam.bai
+*.bai
+*.sam
+*.cram
+*.bed
+*.gtf
+*.bedGraph
+*.bw
+*.bigWig
+
+# ── Archives and serialised data (these were the real gap: none of the extensions above
+# catches an .rds or a .parquet, so they would have been committed silently)
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gz
+*.rds
+*.RDS
+*.feather
+*.parquet
+*.h5
+*.hdf5
+*.pkl
+*.npy
+*.npz
+
+# ── Kept deliberately: covariance models and alignments are small, versioned inputs that
+# define the CM vocabulary (decision 25), so they are NOT ignored above. Listed here only so
+# the omission reads as a choice rather than an oversight: *.cm, *.stk, *.sto.
+# .gitignore for the flaviLib SUBMODULE  —  ~/Desktop/viromelib/flaviLib/.gitignore
+# Revised 2026-10-26.
+#
+# flaviLib is a git submodule, so it has its own independent tracking and its own ignore rules.
+# The parent repo's .gitignore does NOT apply here. This is why `git check-ignore` on a path
+# under flaviLib/ from the parent fails with "is in submodule 'flaviLib'".
+#
+# THE BUG THIS FIXES: the previous version ignored `figures/` wholesale. Inside this submodule
+# that means flaviLib/figures/**, so EVERY flaviLib figure notebook was ignored and untrackable.
+# Git does not descend into an excluded directory, so `!figures/**/*.Rmd` cannot rescue them —
+# the files are unreachable, not merely overridden. Exclude the CONTENTS, never the directory,
+# whenever you want to keep some files from inside it.
+
+# ── System and editor junk
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+~$*
+
+# ── Whole trees that are data, not source
+data/
+work/
+libraryDesign/
+
+# ── figures/: ignore the contents, keep the notebooks, READMEs and input manifests.
+# Do NOT replace this block with `figures/` — that was the bug.
+figures/**
+!figures/**/
+!figures/**/*.Rmd
+!figures/**/*.rmd
+!figures/**/*.R
+!figures/**/*.md
+!figures/**/*.md5
+
+# ── Figure inputs and outputs at any depth. Pattern-based so it keeps working as figure
+# directories are added or renamed (rank/, input_distribution/, representation/,
+# mg_dependence/, vintage_75x75/ all appeared after the old rules were written).
+**/inputs/**
+**/plots/**
+!**/inputs/
+!**/plots/
+!**/inputs/**/*.md5
+!**/plots/**/*.md5
+
+# ── Tabular data and rendered output, globally. Regenerable from a notebook plus its inputs.
+# *.md is deliberately never ignored: keep documentation in Markdown, not .txt.
+*.csv
+*.tsv
+*.txt
+*.tbl
+*.json
+*.xml
 *.xlsx
 *.xls
 *.html
-*.xml
-*.json
-*.bedGraph
-*.bam
-*.bam.bai
+*.nb.html
+*.pdf
+*.svg
+*.png
+*.tiff
+*.tif
+*.jpeg
+*.jpg
+*.eps
+*.ai
+
+# ── Sequence, alignment and interval files
 *.fa
 *.fasta
-*.fastq
 *.fa.fai
 *.fa.ssi
-~$*
+*.fai
+*.fastq
+*.fastq.gz
+*.bam
+*.bam.bai
+*.bai
+*.sam
+*.cram
+*.bed
+*.gtf
+*.bedGraph
+*.bw
+*.bigWig
 
-# keep scripts and models
-!*.cm
-!*.stk
-!*.sto
-!*.rmd
-!*.Rmd
-!*.R
-!*.py
-!*.md
-!*.gitmodules
+# ── Archives and serialised data. None of the extensions above catches an .rds or .parquet,
+# so without these they would be committed silently.
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gz
+*.rds
+*.RDS
+*.feather
+*.parquet
+*.h5
+*.hdf5
+*.pkl
+*.npy
+*.npz
+
+# ── NOT ignored, deliberately: *.cm, *.stk, *.sto. Covariance models and alignments are small
+# versioned inputs that define the CM vocabulary (decision 25); without them under version
+# control, no figure's CM classes are reproducible.
