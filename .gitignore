@@ -2,7 +2,21 @@
 # Revised 2026-10-26. Goal: track code, notebooks and documentation; ignore data, large
 # binaries and regenerable figure output.
 #
-
+# USE ONE IGNORE FILE, AT THE REPO ROOT. Delete ~/Desktop/viromelib/flaviLib/.gitignore.
+# That nested file ignored `figures/`, which inside flaviLib/ means flaviLib/figures/**, so
+# every flaviLib notebook was being ignored. Two ignore files with different rules is how that
+# went unnoticed; this file covers both trees.
+#
+# WHY THERE IS NO `!*.Rmd` RESCUE BLOCK HERE. The old file ended with `!*.Rmd`, `!*.R`, `!*.py`,
+# `!*.md`, `!*.cm` and friends. Those were no-ops: nothing above them excluded those extensions,
+# so they rescued nothing. Worse, they read as though notebooks were protected by an explicit
+# rule when they were only tracked because no pattern happened to catch them. Nothing below
+# excludes source files, so nothing needs rescuing.
+#
+# AND THE RULE THAT CAUSED THE FLAVILIB BUG: git does not descend into an excluded directory,
+# so once `figures/` is ignored you CANNOT re-include anything inside it — `!figures/**/*.Rmd`
+# has no effect, because the files are unreachable rather than merely overridden. Exclude the
+# CONTENTS, never the directory, whenever you want to keep some files from inside it.
 
 # ── System and editor junk
 .DS_Store
@@ -37,6 +51,21 @@ trash/
 !**/plots/**/*.md5
 # A figure input manifest IS worth tracking: a clone cannot knit without the inputs, so at
 # minimum it should be able to say exactly which files it is missing.
+
+# ── R Markdown / htmlwidgets GENERATED output. Added 2026-10-26 after plotly, jQuery,
+# crosstalk and typedarray bundles (~30 files, most of a 1.4 MiB push) were committed from
+# figures/rank/20261019/rank_all_files/. knitr writes a `<name>_files/` directory beside any
+# non-self-contained HTML output and regenerates it on every knit.
+# NOTE this is also why a knit must write into plots/<date>_<strategy>/ -- that output went to
+# figures/rank/20261019/ instead, so the **/plots/** rules never applied to it.
+*_files/
+*_cache/
+*.js
+*.css
+*.scss
+*.map
+*.igv_batch
+*.igv_session.xml
 
 # ── Tabular data and rendered output, globally. All regenerable from a notebook plus inputs.
 # NOTE *.txt is global, so plain-text documentation disappears silently. Keep documentation
