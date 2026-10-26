@@ -1,0 +1,268 @@
+---
+title: "Input representation and the detectability floor"
+output:
+  pdf_document: {fig_width: 11, fig_height: 8.5}
+  html_document: {fig_width: 11, fig_height: 8.5}
+---
+
+<!--
+WHAT THIS FIGURE IS FOR
+
+Every gate in v7.3 is computed on treated (X) libraries, so a virus with no oligos in the pool and a
+virus with oligos but no xrRNA give the identical result: zero passing sites. This figure separates
+them, using the control (R) libraries, which measure representation alone.
+
+It also draws the derivation of the stall-read floor rather than asserting a number, because the
+number is not transferable between libraries and the procedure is.
+
+ONE NOTEBOOK, TWO FIGURES. Set LIB below and knit twice. The panels are identical for the two
+libraries, and two separate files would drift apart; the only differences are paths, the replicate
+gate, and the number of conditions, all handled by the switch.
+
+INPUTS come from scripts/detectability_floor.py:
+  representation/input_representation.tsv   per accession: tiles, R_med, R_min, R_total, band
+  representation/detectability_floor.txt    the report; the floor is parsed out of it, not retyped
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, dev = "cairo_pdf")
+library(tidyverse); library(scales); library(patchwork)
+```
+
+```{r config}
+# ---- THE ONLY THING TO CHANGE BETWEEN THE TWO KNITS -------------------------------------
+LIB <- "flaviLib"          # "flaviLib" or "viromelib"
+
+CFG <- list(
+  flaviLib = list(
+    base      = "~/Desktop/viromelib/flaviLib/figures/representation",
+    rep_tsv   = "flaviLib_input_representation.tsv",
+    floor_txt = "flaviLib_detectability_floor.txt",
+    taxonomy  = "virus_taxonomy_flaviLib_261021.csv",
+    gate      = "2 of 4 replicates",
+    tiling    = "196 nt tiles, 20 nt step",
+    # Accessions worth naming on the depth panel. HCV is here BECAUSE it is the failure case:
+    # it is in the library and was never assayable, which is the whole point of the figure.
+    label = tribble(
+      ~accession,     ~nm,
+      "NC_024077.1",  "SbCNV-5",
+      "NC_006551.1",  "Usutu",
+      "NC_015843.2",  "Tembusu",
+      "NC_009942.1",  "West Nile",
+      "NC_012532.1",  "Zika",
+      "NC_004102.1",  "HCV (H77)",
+      "NC_009827.1",  "HCV"
+    )
+  ),
+  viromelib = list(
+    base      = "~/Desktop/viromelib/figures/representation",
+    rep_tsv   = "viromelib_input_representation.tsv",
+    floor_txt = "viromelib_detectability_floor.txt",
+    taxonomy  = "virus_taxonomy_viromelib_261019.csv",
+    gate      = "2 of 3 replicates",
+    tiling    = "tiles at 80 nt step",
+    label     = tibble(accession = character(), nm = character())
+  )
+)[[LIB]]
+
+# Directory convention -- the SAME one the already-run notebooks use, so nothing here is a new
+# scheme to remember:
+#   <figure>/inputs/                  FLAT. The run is in the FILENAME, not a subdirectory, so it
+#                                     travels with the file if it is ever copied or attached.
+#   <figure>/plots/<date>_<strategy>/ outputs, so a re-run never overwrites an older figure.
+STRATEGY <- paste0("20261026_floor_besttile_", LIB)
+INDIR    <- file.path(path.expand(CFG$base), "inputs")
+OUTDIR   <- file.path(path.expand(CFG$base), "plots", STRATEGY)
+dir.create(OUTDIR, recursive = TRUE, showWarnings = FALSE)
+
+# Bands are an ordered factor everywhere, so colour and legend order never depend on which
+# bands happen to be populated in a given library.
+BAND_LEVELS <- c("not_assayed", "marginal", "assayed")
+BAND_LABS <- c(not_assayed = "not assayed (absence uninformative)",
+               marginal    = "marginal (absence weak evidence)",
+               assayed     = "assayed (absence is a real negative)")
+BAND_COLS <- c(not_assayed = "#b2182b", marginal = "#e8a33d", assayed = "#4393c3")
+```
+
+```{r load}
+rep_path <- file.path(INDIR, CFG$rep_tsv)
+stopifnot("input_representation.tsv not found — copy it down from the cluster" =
+            file.exists(rep_path))
+d <- read_tsv(rep_path, show_col_types = FALSE) |>
+  rename(accession = 1) |>
+  mutate(band = factor(as.character(band), levels = BAND_LEVELS))
+
+# Parse the floor out of the report rather than retyping it. A number typed into a notebook
+# drifts from the number the script derived; this cannot.
+floor_path <- file.path(INDIR, CFG$floor_txt)
+stopifnot("detectability_floor.txt not found" = file.exists(floor_path))
+ftxt <- read_lines(floor_path)
+num <- function(pat) {
+  ln <- str_subset(ftxt, pat)
+  stopifnot("could not parse the floor report — has its format changed?" = length(ln) >= 1)
+  parse_number(str_extract(ln[1], "[0-9][0-9,\\.]*"))
+}
+FLOOR    <- num("^FLOOR")
+MARGINAL <- num("^MARGINAL top")
+LIB_MED  <- num("library median control reads/tile")
+RHO      <- as.numeric(str_extract(str_subset(ftxt, "Spearman")[1], "[-+][0-9.]+"))
+
+# Depth at called sites, the derivation itself. Pulled from the report table so the panel shows
+# exactly the numbers the floor was set from.
+called <- ftxt |>
+  (\(x) x[seq(which(str_detect(x, "^control depth AT SITES THAT PASSED"))[1] + 2, length(x))])() |>
+  head(6) |>
+  str_match("^\\s+(\\S+)\\s+([0-9,]+)\\s+([0-9,]+)\\s+([0-9,]+)\\s+([0-9,]+)\\s+([0-9,]+)") |>
+  as_tibble(.name_repair = "minimal") |>
+  setNames(c("raw", "cond", "n_sites", "unmatched", "min_depth", "p1", "median_depth")) |>
+  filter(!is.na(cond)) |>
+  mutate(across(c(n_sites, unmatched, min_depth, p1, median_depth), parse_number))
+
+tax <- {
+  p <- file.path(INDIR, CFG$taxonomy)
+  if (file.exists(p)) read_csv(p, show_col_types = FALSE) else tibble()
+}
+if (nrow(tax)) {
+  acc_col <- intersect(c("accession", "plain_accession"), names(tax))[1]
+  d <- d |> left_join(tax |> select(accession = all_of(acc_col), any_of(c("family", "genus"))) |>
+                        distinct(accession, .keep_all = TRUE), by = "accession")
+}
+lab <- CFG$label |> inner_join(d, by = "accession")
+```
+
+```{r panelA, fig.height=4}
+# PANEL A — the depth distribution, with the floor drawn on it.
+# log10 x: the range spans six orders of magnitude, so a linear axis would collapse the entire
+# unassayable tail into the first pixel, which is precisely the part being argued about.
+pA <- ggplot(d, aes(R_med + 1)) +
+  annotate("rect", xmin = 0, xmax = FLOOR, ymin = -Inf, ymax = Inf,
+           fill = BAND_COLS[["not_assayed"]], alpha = 0.10) +
+  annotate("rect", xmin = FLOOR, xmax = MARGINAL, ymin = -Inf, ymax = Inf,
+           fill = BAND_COLS[["marginal"]], alpha = 0.10) +
+  geom_histogram(aes(fill = band), bins = 55, colour = NA) +
+  geom_vline(xintercept = c(FLOOR, MARGINAL), linetype = c("solid", "dashed"), linewidth = 0.4) +
+  geom_vline(xintercept = LIB_MED, linetype = "dotted", colour = "grey30") +
+  scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_fill_manual(values = BAND_COLS, labels = BAND_LABS, drop = FALSE, na.value = "grey70") +
+  labs(x = "median control (R) reads per tile", y = "accessions", fill = NULL,
+       title = "A  Input representation per accession",
+       subtitle = sprintf(
+         "solid: floor %s reads/tile  |  dashed: marginal top %s  |  dotted: library median %s",
+         comma(FLOOR), comma(MARGINAL), comma(LIB_MED))) +
+  theme_classic(base_size = 10) +
+  theme(legend.position = "bottom", legend.direction = "vertical",
+        legend.key.size = unit(8, "pt"), plot.subtitle = element_text(size = 7.5))
+
+if (nrow(lab)) {
+  pA <- pA + ggrepel::geom_text_repel(
+    data = lab, aes(x = R_med + 1, y = 0, label = nm),
+    size = 2.5, direction = "y", nudge_y = 6, segment.size = 0.2,
+    min.segment.length = 0, max.overlaps = Inf, seed = 1)
+}
+pA
+```
+
+```{r panelB, fig.height=4}
+# PANEL B — the derivation, drawn. The minimum depth at a site that actually passed IS the floor;
+# showing it next to the full distribution is the argument for the number.
+pB <- ggplot(called, aes(cond)) +
+  geom_linerange(aes(ymin = min_depth, ymax = median_depth), linewidth = 0.5, colour = "grey50") +
+  geom_point(aes(y = median_depth), size = 2.4, colour = "grey30") +
+  geom_point(aes(y = p1), size = 2.0, shape = 21, fill = BAND_COLS[["marginal"]]) +
+  geom_point(aes(y = min_depth), size = 2.6, shape = 23, fill = BAND_COLS[["not_assayed"]]) +
+  geom_hline(yintercept = FLOOR, linewidth = 0.3) +
+  geom_text(aes(y = min_depth, label = comma(min_depth)), hjust = -0.35, size = 2.6) +
+  scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  coord_flip() +
+  labs(x = NULL, y = "control (R) reads per tile",
+       title = "B  How the floor was determined",
+       subtitle = paste0("diamond = MINIMUM depth at a site passing ", CFG$gate,
+                         "; circle = 1st percentile; dot = median.\n",
+                         "No site was ever called below the diamond, so absence below it ",
+                         "carries no information.")) +
+  theme_classic(base_size = 10) +
+  theme(plot.subtitle = element_text(size = 7.5))
+pB
+```
+
+```{r panelC, fig.height=4}
+# PANEL C — is sensitivity uniform across feature length?
+# Reads PER TILE should not depend on how many tiles an accession contributes if the oligo pool
+# were equimolar. A gradient means sensitivity is systematically lower for short features, which
+# weakens every "family X has no xrRNA" claim for short-UTR families.
+pC <- ggplot(d, aes(tiles, R_med + 1)) +
+  geom_point(aes(colour = band), alpha = 0.55, size = 1.1) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
+              colour = "grey20", linewidth = 0.4, linetype = "dashed") +
+  geom_hline(yintercept = FLOOR, linewidth = 0.3) +
+  scale_x_log10() + scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_colour_manual(values = BAND_COLS, drop = FALSE, guide = "none", na.value = "grey70") +
+  labs(x = "tiles contributed by the accession (log)", y = "median control reads per tile (log)",
+       title = "C  Is sensitivity uniform across feature length?",
+       subtitle = sprintf(
+         "Spearman %+.3f. A flat cloud would mean uniform sensitivity; a slope means short\nfeatures were assayed less deeply, so absence is weaker evidence for them.", RHO)) +
+  theme_classic(base_size = 10) +
+  theme(plot.subtitle = element_text(size = 7.5))
+pC
+```
+
+```{r panelD, fig.height=4.2}
+# PANEL D — which taxa fall in which band. Only drawn if taxonomy joined; a figure that silently
+# omits a panel is worse than one that says why.
+if ("family" %in% names(d) && sum(!is.na(d$family)) > 0) {
+  fam <- d |> filter(!is.na(family)) |>
+    count(family, band, .drop = FALSE) |>
+    group_by(family) |> mutate(tot = sum(n)) |> ungroup() |>
+    filter(tot >= 3) |>
+    mutate(family = fct_reorder(family, tot))
+  pD <- ggplot(fam, aes(n, family, fill = band)) +
+    geom_col(width = 0.72) +
+    scale_fill_manual(values = BAND_COLS, labels = BAND_LABS, drop = FALSE, na.value = "grey70") +
+    labs(x = "accessions", y = NULL, fill = NULL,
+         title = "D  Representation by family",
+         subtitle = "families with >= 3 accessions") +
+    theme_classic(base_size = 10) +
+    theme(legend.position = "bottom", legend.direction = "vertical",
+          legend.key.size = unit(8, "pt"), plot.subtitle = element_text(size = 7.5))
+} else {
+  pD <- ggplot() + theme_void() +
+    annotate("text", 0, 0, size = 3,
+             label = "Panel D omitted: no taxonomy file found.\nCopy the taxonomy CSV into inputs/.")
+}
+pD
+```
+
+```{r assemble}
+fig <- (pA | pB) / (pC | pD) +
+  plot_annotation(
+    title = sprintf("Input representation and the detectability floor \u2014 %s", LIB),
+    subtitle = sprintf(
+      paste("%s | %s | gate %s | library median %s control reads/tile.",
+            "Depth measured in CONTROL (R) libraries only: treated depth confounds representation",
+            "with stalling, so a fully degraded virus and an absent virus are indistinguishable there."),
+      LIB, CFG$tiling, CFG$gate, comma(LIB_MED)),
+    theme = theme(plot.subtitle = element_text(size = 8)))
+
+ggsave(file.path(OUTDIR, sprintf("representation_floor_%s.pdf", LIB)),
+       fig, width = 13, height = 10, device = cairo_pdf)
+ggsave(file.path(OUTDIR, sprintf("representation_floor_%s.png", LIB)),
+       fig, width = 13, height = 10, dpi = 300)
+fig
+```
+
+```{r tables}
+# Numbers for the legend and for RZ, written out rather than read off the plot.
+summ <- d |> count(band, .drop = FALSE) |> mutate(pct = 100 * n / sum(n))
+write_csv(summ, file.path(OUTDIR, sprintf("band_counts_%s.csv", LIB)))
+write_csv(d |> filter(band != "assayed") |> arrange(R_med),
+          file.path(OUTDIR, sprintf("accessions_below_assayed_%s.csv", LIB)))
+knitr::kable(summ, digits = 1, caption = sprintf("%s: accessions by band", LIB))
+```
+
+```{r provenance, results='asis'}
+cat(sprintf(
+"\n\n**Provenance.** `%s` · floor %s and marginal top %s parsed from `%s`, both derived by
+`scripts/detectability_floor.py` from this library's own data. The floor is **not** transferable
+between libraries: it is a property of depth, tile geometry and the replicate gate. Knit %s.\n",
+LIB, comma(FLOOR), comma(MARGINAL), basename(CFG$floor_txt), format(Sys.Date())))
+```

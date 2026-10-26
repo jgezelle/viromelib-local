@@ -1,0 +1,38 @@
+snapshotDirectory snapshots
+new
+load 01_Jingmen_tick_virus_1-196.xml
+goto NC_034223.1:2479-2674
+maxPanelHeight 800
+snapshot 01_Jingmen_tick_virus_1-196.png
+snapshot 01_Jingmen_tick_virus_1-196.svg
+new
+load 02_Soybean_cyst_nematode_virus_5_1-1156.xml
+goto NC_024077.1:18018-19173
+maxPanelHeight 800
+snapshot 02_Soybean_cyst_nematode_virus_5_1-1156.png
+snapshot 02_Soybean_cyst_nematode_virus_5_1-1156.svg
+new
+load 03_Tembusu_virus_1-668.xml
+goto NC_015843.2:10322-10989
+maxPanelHeight 800
+snapshot 03_Tembusu_virus_1-668.png
+snapshot 03_Tembusu_virus_1-668.svg
+new
+load 04_Zika_virus_2658-2959.xml
+goto NC_012532.1:2658-2959
+maxPanelHeight 800
+snapshot 04_Zika_virus_2658-2959.png
+snapshot 04_Zika_virus_2658-2959.svg
+new
+load 05_Zika_virus_7238-7538.xml
+goto NC_012532.1:7238-7538
+maxPanelHeight 800
+snapshot 05_Zika_virus_7238-7538.png
+snapshot 05_Zika_virus_7238-7538.svg
+new
+load 06_Zika_virus_10229-10613.xml
+goto NC_012532.1:10229-10613
+maxPanelHeight 800
+snapshot 06_Zika_virus_10229-10613.png
+snapshot 06_Zika_virus_10229-10613.svg
+exit

@@ -1,0 +1,395 @@
+---
+title: "viromelib — Supp. Fig. 2: what else is out there"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+---
+
+Inputs are the two offline tables from run log **step 18**, both written by
+`ncbi_virus_space.py classify` from the dated taxdump — no Entrez, no API key:
+
+- `virus_space.species_by_bin.tsv` — species per genome-type bin → **panel A**
+- `virus_space.family_coverage.tsv` — per family, species in NCBI vs species in the library → **panels B and C**
+
+**One unit = one virus species (TaxID). Accessions are never counted.** NCBI Taxonomy names every virus
+species whether or not it has a RefSeq genome, so this is the "all of NCBI, not just RefSeq" denominator and
+it arrives already collapsed: SARS-CoV-2 is one species whether it has eight accessions or eight million,
+and ten isolates of one virus are one row.
+
+| panel | question |
+|---|---|
+| **A** | how large is each part of the RNA-virus space, and which part did the design target? |
+| **B** | which eukaryotic +ssRNA families are **absent** from the library? |
+| **C** | of the families we did include, how much of each is still missing? |
+| **D** | how much of what the design criteria *could* reach did we order? (accessions) |
+
+**The denominator deliberately applies none of the design criteria.** Panel A counts every +ssRNA
+eukaryotic-host virus species in NCBI Taxonomy — no RefSeq requirement, no completeness requirement, and
+"+ssRNA" taken from ICTV's phylum placement rather than from NCBI Virus's `GenomicMoltype_s` facet. That is
+the point: the gap between panel A and the library measures what the query cost, so applying the query's
+own filters to the denominator would hide exactly what the figure is for. Panel B then names which
+criterion removed each absent family.
+
+Two consequences worth stating in the legend rather than treating as caveats. **Endornaviridae (358
+species) and Polymycoviridae (70) sit in a +ssRNA phylum but replicate through a dsRNA form**, and the
+`ssRNA(+)` facet did not return them — the molecule-type criterion excluded 428 species that ICTV places
+in scope. And "eukaryotic host" in panel A is a lineage rule (Kitrinoviricota ∪ Pisuviricota ∪
+Lenarviricota, less Duplopiviricetes and Leviviricetes), because NCBI Taxonomy has no host field; the
+design's own host filter used NCBI Virus metadata, which is a different and more direct test.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(cowplot)
+library(svglite)
+library(glue)
+```
+
+## Paths
+
+```{r paths}
+IN_DIR <- "~/Desktop/viromelib/figures/supp2/inputs"
+# Step 18 writes exactly one set of these and it is always the ordered pool (decision 21).
+# The `_ordered` in the name is kept even though no other variant can now be produced: the file
+# travels to a laptop and into a figure directory, where "which library?" is the first question
+# a reader asks, and an unqualified name answers it only by reference to this comment.
+BIN_TSV <- file.path(IN_DIR, "virus_space_ordered.species_by_bin.tsv")
+FAM_TSV <- file.path(IN_DIR, "virus_space_ordered.family_coverage.tsv")
+# optional, from step 18b (family_absence_reasons.py). If absent, panel B is drawn in one colour.
+RSN_TSV <- file.path(IN_DIR, "family_absence_reasons_ordered.tsv")
+
+OUT_DIR <- "~/Desktop/viromelib/figures/supp2/20261020"
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+# how many families to show in each of panels B and C. The tail is long and mostly
+# single-species families; the full table is written out as source data regardless.
+TOP_ABSENT  <- 15
+TOP_PARTIAL <- 15
+
+FIG_W <- 15.5
+FIG_H <- 5.6
+
+# ── Panel D: the design funnel. ACCESSIONS, not species — the design worked at the accession
+# level and these numbers come from oligo_design_README.md and run log step 16a, not from the
+# taxdump. Labelled as accessions in the panel so the two units are never read as one.
+#
+# The design query was: RefSeq AND complete assembly AND complete sequence AND ssRNA(+) AND
+# eukaryotic host (HostLineage taxid:2759). That is the space the criteria could ever reach —
+# far smaller than the 20,969 species in panel A, which is the point of showing both.
+FUNNEL <- tribble(
+  ~stage,                        ~n,     ~note,
+  "NCBI Virus query\n(Mar 2025)", 1718,  "RefSeq, complete, ssRNA(+), eukaryotic host",
+  "Designed",                     1678,  "after record-level filters (parse.py)",
+  "Ordered",                      1226,  "the library; decision 21"
+)
+# Set this once you have re-run the same NCBI Virus query, to show how the addressable space has
+# grown since the design. NA leaves it out.
+NCBI_QUERY_NOW <- NA_real_
+```
+
+## Load
+
+```{r load}
+BIN_ORDER <- c("ssRNA+_euk", "ssRNA+_prok", "dsRNA", "ssRNA-", "ssRNA_RT",
+               "RNA_other", "DNA_or_unclassified")
+BIN_LABEL <- c(
+  "ssRNA+_euk"          = "+ssRNA\neukaryotic hosts",
+  "ssRNA+_prok"         = "+ssRNA\nbacterial hosts",
+  "dsRNA"               = "dsRNA",
+  "ssRNA-"              = "−ssRNA",
+  "ssRNA_RT"            = "ssRNA-RT\n(retro)",
+  "RNA_other"           = "RNA, other or\nunassigned",
+  "DNA_or_unclassified" = "DNA or\nunclassified"
+)
+
+COL_IN  <- "#B5179E"   # the targeted bin / covered
+COL_OUT <- "#BFBFBF"   # outside the criteria / missing
+COL_LIB <- "#7209B7"   # in the library
+
+# Panel B: WHICH DESIGN CRITERION removed this family. This is the figure's point -- the
+# denominator in panel A deliberately requires none of RefSeq, completeness or NCBI's
+# molecule-type call, so the gap between it and the library measures what the query cost.
+# Only the first category is a library decision; the others name the criterion responsible.
+RSN_COL <- c(
+  "dropped_in_design"          = "#B5179E",
+  "refseq_exists_not_returned" = "#8D99AE",
+  "no_refseq_complete"         = "#D9D9D9",
+  "not_determined"             = "#F0F0F0"
+)
+RSN_LAB <- c(
+  "dropped_in_design"          = "Passed the query; lost in library design",
+  "refseq_exists_not_returned" = "Excluded by the ssRNA(+) / host criteria",
+  "no_refseq_complete"         = "Excluded by the RefSeq + complete criteria",
+  "not_determined"             = "Not determined"
+)
+
+sp <- read_tsv(BIN_TSV, show_col_types = FALSE) %>%
+  filter(bin %in% BIN_ORDER) %>%
+  mutate(bin = factor(bin, levels = BIN_ORDER),
+         label = factor(BIN_LABEL[as.character(bin)], levels = BIN_LABEL[BIN_ORDER]),
+         in_criteria = in_design_criteria == 1)
+
+NO_FAMILY <- "(no family assigned)"
+
+fam_all <- read_tsv(FAM_TSV, show_col_types = FALSE) %>%
+  filter(bin == "ssRNA+_euk")
+
+# "(no family assigned)" is the single largest row in the table (thousands of species, mostly
+# environmental sequences never placed in a family). It is not a family, so it cannot sit in a
+# ranked list of families -- it would top both panels and mean nothing. Held out and reported
+# in the text instead.
+nofam <- fam_all %>% filter(family == NO_FAMILY)
+fam   <- fam_all %>% filter(family != NO_FAMILY)
+
+rsn <- if (file.exists(RSN_TSV)) {
+  read_tsv(RSN_TSV, show_col_types = FALSE) %>%
+    select(family, reason, n_refseq_complete,
+           any_of(c("returned_by_design_query", "n_accessions_in_query")))
+} else {
+  message("no family_absence_reasons.tsv -- panel B drawn in one colour. Run step 18b.")
+  tibble(family = character(), reason = character(), n_refseq_complete = numeric())
+}
+
+rna <- sp %>% filter(is_rna == 1)
+tgt <- sp %>% filter(bin == "ssRNA+_euk")
+stopifnot("ssRNA+_euk row missing" = nrow(tgt) == 1)
+
+# Sanity check, not a choice of input: the ordered pool is 1,055 TaxIDs (decision 21).
+EXPECT_LIBRARY_TAXIDS <- 1055
+n_lib_taxids <- sum(sp$library_taxids, na.rm = TRUE)
+if (n_lib_taxids != EXPECT_LIBRARY_TAXIDS) {
+  stop(glue("this table has {comma(n_lib_taxids)} library TaxIDs, expected ",
+            "{comma(EXPECT_LIBRARY_TAXIDS)} (the ordered pool). Re-run step 18. ",
+            "Change EXPECT_LIBRARY_TAXIDS only if the library itself changed."))
+}
+
+n_fam_total   <- nrow(fam)
+n_fam_covered <- sum(fam$in_library == 1)
+
+message(glue("RNA-virus species in this taxdump: {comma(sum(rna$n_species))}"))
+message(glue("+ssRNA eukaryotic-host species: {comma(tgt$n_species)}; ",
+             "library covers {comma(tgt$library_species)} ",
+             "({round(100 * tgt$library_species / tgt$n_species, 2)}%)"))
+message(glue("+ssRNA eukaryotic-host families: {n_fam_total} in NCBI, ",
+             "{n_fam_covered} represented in the library, ",
+             "{n_fam_total - n_fam_covered} absent"))
+if (nrow(nofam)) message(glue(
+  "held out of the family panels: {comma(nofam$n_species_ncbi)} species with no assigned family, ",
+  "{comma(nofam$library_species)} of them in the library"))
+knitr::kable(sp %>% select(bin, genome_type, baltimore, n_species, library_species))
+```
+
+## Panel A — the RNA-virus space, by genome type
+
+```{r panel_a, fig.width=4.6, fig.height=5}
+# The library's share is drawn as a stacked segment with a legend. The previous version wrote
+# "library N" inside each bar, which was unreadable on the bins where N was 1 or 25 -- those
+# segments are a fraction of a pixel tall and the text floated on an apparently empty bar.
+dA <- rna %>%
+  transmute(label, in_criteria,
+            `In ordered library` = coalesce(library_species, 0),
+            `Not in library`     = n_species - coalesce(library_species, 0),
+            n_species) %>%
+  pivot_longer(c(`In ordered library`, `Not in library`),
+               names_to = "part", values_to = "n") %>%
+  mutate(part = factor(part, levels = c("Not in library", "In ordered library")))
+
+totA <- rna %>% select(label, n_species, in_criteria)
+
+pA <- ggplot(dA, aes(x = label, y = n, fill = part)) +
+  geom_col(width = 0.72) +
+  geom_text(data = totA, inherit.aes = FALSE,
+            aes(x = label, y = n_species, label = comma(n_species)),
+            vjust = -0.5, size = 2.8, colour = "grey25") +
+  scale_fill_manual(values = c("Not in library" = COL_OUT,
+                               "In ordered library" = COL_LIB), name = NULL) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.14)), labels = comma,
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(x = NULL, y = "Virus species (NCBI Taxonomy)",
+       title = "A  Species per genome type, and the fraction assayed",
+       subtitle = glue("the library targeted +ssRNA eukaryotic-host viruses only: ",
+                       "{comma(tgt$library_species)} of {comma(tgt$n_species)} species ",
+                       "({round(100 * tgt$library_species / tgt$n_species, 1)}%)")) +
+  theme_classic(base_size = 11) +
+  theme(plot.title = element_text(size = 10.5, face = "bold"),
+        plot.subtitle = element_text(size = 7.6, colour = "grey40"),
+        axis.text.x = element_text(size = 7, angle = 35, hjust = 1, lineheight = 0.85),
+        legend.position = c(0.99, 0.99), legend.justification = c(1, 1),
+        legend.text = element_text(size = 7.2),
+        legend.key.size = unit(0.8, "lines"),
+        legend.background = element_rect(fill = alpha("white", 0.85), colour = NA),
+        plot.margin = margin(2, 2, 1, 2))
+pA
+```
+
+## Panel B — eukaryotic +ssRNA families absent from the library
+
+```{r panel_b, fig.width=3.8, fig.height=5}
+dB <- fam %>%
+  filter(in_library == 0) %>%
+  arrange(desc(n_species_ncbi)) %>%
+  slice_head(n = TOP_ABSENT) %>%
+  mutate(family = fct_reorder(family, n_species_ncbi))
+
+dB <- dB %>%
+  left_join(rsn, by = "family") %>%
+  mutate(reason = factor(coalesce(reason, "not_determined"), levels = names(RSN_COL)))
+
+pB <- ggplot(dB, aes(x = n_species_ncbi, y = family, fill = reason)) +
+  geom_col(width = 0.72) +
+  geom_text(aes(label = comma(n_species_ncbi)), hjust = -0.25, size = 2.8, colour = "grey25") +
+  scale_fill_manual(values = RSN_COL, labels = RSN_LAB, name = "Excluded by",
+                    drop = FALSE) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.22)), labels = comma,
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(x = "Species described in NCBI Taxonomy", y = NULL,
+       title = "B  Which design criterion excluded each absent family",
+       subtitle = glue("{n_fam_total - n_fam_covered} of {n_fam_total} eukaryotic +ssRNA families ",
+                       "have no library member; largest {nrow(dB)} shown")) +
+  theme_classic(base_size = 11) +
+  theme(plot.title = element_text(size = 10.5, face = "bold"),
+        plot.subtitle = element_text(size = 7.6, colour = "grey40"),
+        axis.text.y = element_text(size = 7.4),
+        legend.position = c(0.99, 0.03), legend.justification = c(1, 0),
+        legend.text = element_text(size = 6.6), legend.title = element_text(size = 7.2),
+        legend.key.size = unit(0.75, "lines"),
+        legend.background = element_rect(fill = alpha("white", 0.85), colour = NA),
+        plot.margin = margin(2, 2, 1, 2))
+pB
+
+if (nrow(rsn)) knitr::kable(dB %>% select(family, n_species_ncbi, reason, n_refseq_complete,
+                                          any_of("returned_by_design_query")))
+```
+
+## Panel C — of the families we did include, how much is missing
+
+```{r panel_c, fig.width=4.4, fig.height=5}
+dC <- fam %>%
+  filter(in_library == 1) %>%
+  arrange(desc(n_species_missing)) %>%
+  slice_head(n = TOP_PARTIAL) %>%
+  mutate(family = fct_reorder(family, n_species_ncbi)) %>%
+  select(family, n_species_ncbi, pct_covered,
+         `in library` = library_species, `missing` = n_species_missing) %>%
+  pivot_longer(c(`in library`, `missing`), names_to = "part", values_to = "n") %>%
+  mutate(part = factor(part, levels = c("in library", "missing")))
+
+lab <- dC %>% distinct(family, n_species_ncbi, pct_covered)
+
+pC <- ggplot(dC, aes(x = n, y = family, fill = part)) +
+  geom_col(width = 0.72) +
+  geom_text(data = lab, inherit.aes = FALSE,
+            aes(x = n_species_ncbi, y = family, label = glue("{round(pct_covered)}%")),
+            hjust = -0.2, size = 2.7, colour = "grey25") +
+  scale_fill_manual(values = c("in library" = COL_LIB, "missing" = COL_OUT), name = NULL) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.14)), labels = comma,
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(x = "Species described in NCBI Taxonomy", y = NULL,
+       title = "C  Within-family coverage of represented families",
+       subtitle = glue("ranked by species absent; % = fraction of the family in the library. ",
+                       "Largest {nrow(lab)} shown")) +
+  theme_classic(base_size = 11) +
+  theme(plot.title = element_text(size = 11, face = "bold"),
+        plot.subtitle = element_text(size = 8, colour = "grey40"),
+        axis.text.y = element_text(size = 7.6),
+        legend.position = c(0.98, 0.04), legend.justification = c(1, 0),
+        legend.text = element_text(size = 7.5),
+        legend.background = element_rect(fill = alpha("white", 0.8), colour = NA),
+        plot.margin = margin(2, 2, 1, 2))
+pC
+```
+
+## Panel D — the design funnel
+
+The criteria could only ever reach RefSeq, complete, +ssRNA, eukaryotic-host genomes. Against that space
+the library is near-complete; against all of NCBI Taxonomy (panel A) it is a few per cent. Both are true
+and they say different things — the gap between panel A and panel D **is** the RefSeq-and-complete
+requirement, not a shortfall in the tiling or the order.
+
+```{r panel_d, fig.width=3.4, fig.height=5}
+dD <- FUNNEL
+if (!is.na(NCBI_QUERY_NOW)) {
+  dD <- bind_rows(tibble(stage = "NCBI Virus query\n(now)", n = NCBI_QUERY_NOW,
+                         note = "same query, re-run"), dD)
+}
+dD <- dD %>% mutate(stage = factor(stage, levels = rev(stage)),
+                    pct = 100 * n / max(n))
+
+pD <- ggplot(dD, aes(x = n, y = stage)) +
+  geom_col(fill = c(COL_LIB, COL_IN, COL_OUT)[seq_len(nrow(dD))] %>% rev(), width = 0.6) +
+  geom_text(aes(label = comma(n)), hjust = -0.2, size = 3.0, colour = "grey25") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.2)), labels = comma,
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(x = "Genome accessions (not species)", y = NULL,
+       title = "D  Attrition from NCBI query to ordered library",
+       subtitle = glue("{round(100 * FUNNEL$n[FUNNEL$stage == 'Ordered'] / max(FUNNEL$n), 1)}% of ",
+                       "accessions meeting the design criteria were ordered")) +
+  theme_classic(base_size = 11) +
+  theme(plot.title = element_text(size = 11, face = "bold"),
+        plot.subtitle = element_text(size = 8, colour = "grey40"),
+        axis.text.y = element_text(size = 7.6, lineheight = 0.9),
+        plot.margin = margin(2, 2, 1, 2))
+pD
+knitr::kable(FUNNEL)
+```
+
+## Assemble
+
+```{r assemble, fig.width=15.5, fig.height=5.6}
+fig <- plot_grid(pA, pB, pC, pD, nrow = 1, rel_widths = c(1.0, 1.15, 1.05, 0.72),
+                 align = "h", axis = "tb")
+fig
+
+ggsave(file.path(OUT_DIR, "SuppFig2_ncbi_virus_space.pdf"), fig,
+       width = FIG_W, height = FIG_H, device = cairo_pdf)
+ggsave(file.path(OUT_DIR, "SuppFig2_ncbi_virus_space.svg"), fig,
+       width = FIG_W, height = FIG_H)
+write_csv(sp,  file.path(OUT_DIR, "suppfig2_source_data_bins.csv"))
+write_csv(fam, file.path(OUT_DIR, "suppfig2_source_data_families.csv"))
+message("-> ", file.path(OUT_DIR, "SuppFig2_ncbi_virus_space.pdf"))
+```
+
+## The full family table
+
+Every eukaryotic +ssRNA family, so nothing is hidden by the `TOP_*` cutoffs.
+
+```{r full_table}
+bind_rows(fam, nofam) %>%
+  arrange(family == NO_FAMILY, desc(n_species_ncbi)) %>%
+  select(family, n_species_ncbi, library_species, n_species_missing, pct_covered) %>%
+  knitr::kable(caption = paste0("All eukaryotic +ssRNA families. '", NO_FAMILY,
+                                "' is listed last and is excluded from panels B and C."))
+```
+
+## Caption draft
+
+```{r caption, results='asis', echo=FALSE}
+cat(glue("
+**Supplementary Figure 2. The ordered library against the NCBI RNA-virus space.**
+Counts are virus **species** (NCBI Taxonomy, taxdump of 2026-10-19); strains and isolates are collapsed to
+their species, and sequence accessions are not counted, so each virus contributes once regardless of how
+often it has been sequenced.
+(**A**) Species per genome type across the RNA-virus realms. Magenta marks the design criteria (+ssRNA,
+eukaryotic hosts; n = {comma(tgt$n_species)} species); the purple inset bar is the
+{comma(tgt$library_species)} species in the ordered library
+({round(100 * tgt$library_species / tgt$n_species, 2)}%).
+(**B**) The largest eukaryotic +ssRNA families with no species in the library
+({n_fam_total - n_fam_covered} of {n_fam_total} such families are absent).
+(**C**) Families that are represented, ranked by the number of species still missing; the percentage is the
+fraction of that family's species present in the library.
+(**D**) The design funnel, in **accessions**: the upstream NCBI Virus query (RefSeq, complete assembly,
+complete sequence, ssRNA(+), eukaryotic host) returned {comma(FUNNEL$n[1])} accessions in March 2025, of
+which {comma(FUNNEL$n[2])} were designed and {comma(FUNNEL$n[3])} ordered
+({round(100 * FUNNEL$n[3] / FUNNEL$n[1], 1)}%). The difference between panel A and panel D is the
+RefSeq-and-complete requirement: the criteria addressed a far smaller space than the viruses that exist.
+Panels A-C count species and panel D counts accessions; the two units are not interchangeable, since a
+segmented virus contributes several accessions.
+Genome type and host were assigned from the taxonomic lineage, not from a host annotation: NCBI Taxonomy
+has no host field, so +ssRNA eukaryotic-host viruses were taken as Kitrinoviricota, Pisuviricota and
+Lenarviricota excluding the dsRNA class Duplopiviricetes and the bacterial class Leviviricetes. Viruses with
+no assigned family ({comma(nofam$n_species_ncbi)} species, of which {comma(nofam$library_species)} are in
+the library) are excluded from panels B and C, since they are not a family; they appear in the source data.
+"))
+```

@@ -1,0 +1,44 @@
+---
+title: "SbCNV-5 RNA 5' ends (A3480)"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+# Project folder (all paths below are relative to it; this Rmd can live anywhere, e.g. workflows/):
+#   ~/Desktop/viromelib/figures/fig_sbcnv_5end/
+#   ├── 05_plot_5p_sbcnv5p.R          plotting script
+#   ├── workflows/                    this Rmd
+#   └── 261009/                       one folder per run
+#       ├── inputs/                   counts.tsv, substitutions.tsv, sbcnv5_annotations.tsv
+#       └── plots/                    outputs (created if missing)
+base <- path.expand("~/Desktop/viromelib/figures/fig_sbcnv_5end")
+knitr::opts_knit$set(root.dir = base)   # working directory for every chunk (setwd() only lasts one chunk)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r settings}
+run <- "261009"                                   # run folder; change for a new run
+inp <- file.path(run, "inputs")
+options(
+  sbcnv5.counts = file.path(inp, "260930-scnv-blue-5end-A3480.5p_counts.tsv"),
+  sbcnv5.subs   = file.path(inp, "substitutions.tsv"),
+  sbcnv5.ann    = file.path(inp, "sbcnv5_annotations.tsv"),
+  sbcnv5.out    = file.path(run, "plots", paste0(run, "_SbCNV5_5prime_ends.svg"))
+)
+getwd()   # should print the project folder
+```
+
+```{r figure}
+source("05_plot_5p_sbcnv5p.R")
+```
+
+```{r show, out.width = "100%"}
+knitr::include_graphics(normalizePath(getOption("sbcnv5.out")))
+```
+
+```{r tables}
+peaks <- read.delim(sub("\\.svg$", "_peaks.tsv", getOption("sbcnv5.out")))
+head(peaks, 15)
+stalls <- sub("\\.svg$", "_stalls.tsv", getOption("sbcnv5.out"))
+if (file.exists(stalls)) read.delim(stalls)
+```

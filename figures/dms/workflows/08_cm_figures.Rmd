@@ -1,0 +1,242 @@
+---
+title: "DMS-MaP of the virome library: reactivity on xrRNA classes"
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+params:
+  local: "~/Desktop/viromelib/figures/viromelib_DMS/260903-260930/md2000/cm"   # local folder
+  fetch: true                                   # download/refresh the tables first
+  host: "jgg2144@hpc.c2b2.columbia.edu"
+  remote_07: "/groups/as6282_gp/scratch_bkup/jgg2144/xrRNASHAPE/DMS/work/07_superfold/virome/260903-260930/md2000"
+  remote_06: "/groups/as6282_gp/scratch_bkup/jgg2144/xrRNASHAPE/DMS/work/06_analysis/virome/260903-260930/md2000"
+  rnas: "NC_015843.2,NC_035889.1"               # example RNAs for the window zooms
+  min_group: 3                                  # no-CM genus groups with at least this many windows
+---
+
+<!--
+workflows/08_cm_figures.Rmd - step 08 figures. Runs LOCALLY (laptop): open in RStudio, Knit.
+Downloads the tables (rsync over ssh), draws the figures into <local>/figures/<date>/ as .svg and
+.pdf, writes FIGURE_GUIDE.md there, and writes this report next to this file.
+Inputs:  07d  cm/cm_hits.tsv cm_positions.tsv cm_consensus.tsv cm_pairs.tsv
+         07c  windows/per_nt.tsv (sequence + A/C reactivity per nucleotide)
+         06b  stall_windows/windows.tsv taxon_similarity.tsv
+-->
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages(library(ggplot2))
+LOCAL <- path.expand(params$local)
+NEED <- c("cm/cm_hits.tsv", "cm/cm_positions.tsv", "cm/cm_consensus.tsv", "cm/cm_pairs.tsv",
+          "windows/per_nt.tsv", "stall_windows/windows.tsv", "stall_windows/taxon_similarity.tsv")
+
+FETCH_LOG <- "download skipped (fetch: false)"
+if (isTRUE(params$fetch)) {
+  dir.create(LOCAL, showWarnings = FALSE, recursive = TRUE)
+  get <- function(remote, files) {
+    inc <- c(paste0("--include=", unique(dirname(files)), "/"), paste0("--include=", files), "--exclude=*")
+    out <- tryCatch(suppressWarnings(system2("rsync",
+             c("-a", "--prune-empty-dirs", inc, shQuote(paste0(params$host, ":", remote, "/")), shQuote(paste0(LOCAL, "/"))),
+             stdout = TRUE, stderr = TRUE, env = "RSYNC_RSH='ssh -o BatchMode=yes -o ConnectTimeout=15'")),
+             error = function(e) structure(conditionMessage(e), status = 1L))
+    st <- attr(out, "status")
+    if (!is.null(st) && st != 0) stop("Download from ", params$host, " failed:\n", paste(tail(out, 5), collapse = "\n"))
+  }
+  get(params$remote_07, grep("^(cm|windows)/", NEED, value = TRUE))
+  get(params$remote_06, grep("^stall_windows/", NEED, value = TRUE))
+  FETCH_LOG <- paste0("downloaded ", format(Sys.time(), "%b %d %H:%M"))
+}
+miss <- NEED[!file.exists(file.path(LOCAL, NEED))]
+if (length(miss)) stop("Missing inputs in ", LOCAL, ": ", paste(miss, collapse = ", "))
+
+FIG <- file.path(LOCAL, "figures", format(Sys.Date()))       # one subfolder per day
+GUIDE <- data.frame(file = character(), shows = character(), from = character())
+
+# ---- style ----
+COLORS <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948")
+CM_COLORS <- c(Class1a = "#e87ba4", Class1b = "#008300", Class2 = "#4a3aa7", cl3 = "#e34948",
+               cl4 = "#eda100", none = "#c9c8c3")
+INK <- "#0b0b0b"; INK2 <- "#52514e"; MUTED <- "#898781"; SURF <- "#fcfcfb"
+REACT_COLS <- c(low = "#2b2b2b", mid = "#f2a20d", high = "#d7191c", `G/U` = "#ecebe7", `no reads` = "#bdbcb6")
+theme_set(theme_classic(base_size = 9) +
+  theme(plot.background = element_rect(fill = SURF, colour = NA), panel.background = element_rect(fill = SURF, colour = NA),
+        axis.line = element_line(colour = MUTED, linewidth = 0.4), axis.ticks = element_line(colour = MUTED, linewidth = 0.4),
+        axis.text = element_text(colour = INK2), axis.title = element_text(colour = INK2),
+        plot.title = element_text(colour = INK, face = "bold", size = 11, hjust = 0), plot.title.position = "plot",
+        plot.subtitle = element_text(colour = INK2, size = 8), strip.background = element_blank(),
+        strip.text = element_text(colour = INK, face = "bold", hjust = 0, size = 10),
+        legend.background = element_rect(fill = SURF, colour = NA), legend.key = element_rect(fill = SURF, colour = NA),
+        legend.text = element_text(colour = INK2), legend.title = element_text(colour = INK2)))
+
+# save .svg + .pdf, record a one-line entry for FIGURE_GUIDE.md, print into the report
+fig <- function(p, name, w, h, shows, from) {
+  dir.create(FIG, showWarnings = FALSE, recursive = TRUE)
+  svg_dev <- if (requireNamespace("svglite", quietly = TRUE)) svglite::svglite else grDevices::svg
+  pdf_dev <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+  f <- file.path(FIG, name)
+  ggsave(paste0(f, ".svg"), p, width = w, height = h, device = svg_dev, bg = SURF)
+  ggsave(paste0(f, ".pdf"), p, width = w, height = h, device = pdf_dev, bg = SURF)
+  GUIDE[nrow(GUIDE) + 1, ] <<- c(name, shows, from)
+  cat("![](", normalizePath(paste0(f, ".svg")), ")\n\n", sep = "")
+}
+rd <- function(f) read.delim(file.path(LOCAL, f), check.names = FALSE, stringsAsFactors = FALSE)
+tf <- function(v) toupper(as.character(v)) %in% c("TRUE", "T")
+fmt_p <- function(p) ifelse(is.na(p), "NA", ifelse(p < 0.001, formatC(p, format = "e", digits = 1), signif(p, 2)))
+tbl <- function(d, digits = 3) knitr::kable(d, digits = digits, row.names = FALSE)
+short <- function(x) sub("_inferred_3UTR|_3UTR|_intergenic", "", x)
+react_bin <- function(r, base) factor(ifelse(!is.na(r), ifelse(r < 0.4, "low", ifelse(r < 0.85, "mid", "high")),
+                                             ifelse(toupper(base) %in% c("G", "U"), "G/U", "no reads")),
+                                      levels = names(REACT_COLS))
+dotbracket <- function(P, from, to) {
+  s <- rep(".", to - from + 1); P <- P[P$i >= from & P$j <= to, , drop = FALSE]
+  s[P$i - from + 1] <- "("; s[P$j - from + 1] <- ")"; paste(s, collapse = "")
+}
+
+H <- rd("cm/cm_hits.tsv"); CP <- rd("cm/cm_positions.tsv"); CC <- rd("cm/cm_consensus.tsv"); CMP <- rd("cm/cm_pairs.tsv")
+PN <- rd("windows/per_nt.tsv"); W <- rd("stall_windows/windows.tsv"); TX <- rd("stall_windows/taxon_similarity.tsv")
+CP$cm_paired <- tf(CP$cm_paired); W <- W[tf(W$kept), ]
+```
+
+Tables: `r LOCAL` (`r FETCH_LOG`). Figures and `FIGURE_GUIDE.md`: `r FIG`.
+Reactivity = A/C DMS reactivity (md2000 profiles); G/U and positions under 2,000 reads have none.
+
+## 1. Reactivity on each CM class
+
+Each stall window with a CM hit is aligned to its class's CM (07d), so all windows of a class share
+consensus positions. If the data fit the CM structure, CM-paired positions are less reactive.
+
+```{r class-test}
+ag <- do.call(rbind, lapply(split(CP, CP$cm_class), function(x) {
+  a <- x$reactivity[x$cm_paired & !is.na(x$reactivity)]; b <- x$reactivity[!x$cm_paired & !is.na(x$reactivity)]
+  data.frame(cm_class = x$cm_class[1], windows = length(unique(x$window)), median_paired = median(a),
+             median_unpaired = median(b), n_paired = length(a), n_unpaired = length(b),
+             p = if (length(a) > 2 && length(b) > 2) wilcox.test(a, b)$p.value else NA)
+}))
+tbl(ag, 4)
+```
+
+```{r class-figs, results = "asis", fig.keep = "none"}
+for (cls in intersect(names(CM_COLORS), unique(CP$cm_class))) {
+  x <- CP[CP$cm_class == cls, ]; cc <- CC[CC$cm_class == cls, ]; n <- max(cc$cons_pos)
+  m <- do.call(rbind, lapply(split(x, x$cons_pos), function(y) data.frame(
+    cons_pos = y$cons_pos[1], med = median(y$reactivity, na.rm = TRUE),
+    q1 = quantile(y$reactivity, .25, na.rm = TRUE, names = FALSE), q3 = quantile(y$reactivity, .75, na.rm = TRUE, names = FALSE),
+    n = sum(!is.na(y$reactivity)))))
+  m <- merge(m, cc[, c("cons_pos", "cons_base", "dot_bracket")], all.y = TRUE)
+  m$cm <- ifelse(m$dot_bracket == ".", "unpaired in CM", "paired in CM")
+  lab <- data.frame(cons_pos = cc$cons_pos, ch = cc$dot_bracket, base = toupper(cc$cons_base))
+  pa <- ggplot(m, aes(cons_pos)) +
+    geom_col(aes(y = ifelse(n >= 2, med, NA), fill = cm), width = 0.85, na.rm = TRUE) +
+    geom_errorbar(aes(ymin = ifelse(n >= 2, q1, NA), ymax = ifelse(n >= 2, q3, NA)), width = 0.3, colour = MUTED, linewidth = 0.3, na.rm = TRUE) +
+    geom_text(data = lab, aes(y = -0.18, label = ch), size = 2.6, family = "mono", colour = INK) +
+    geom_text(data = lab, aes(y = -0.32, label = base), size = 2.2, family = "mono", colour = INK2) +
+    scale_fill_manual(values = c(`paired in CM` = CM_COLORS[[cls]], `unpaired in CM` = MUTED), name = NULL) +
+    scale_x_continuous(breaks = seq(0, n, 10), expand = c(0.01, 0)) +
+    labs(x = "CM consensus position", y = "reactivity (median, IQR)",
+         title = sprintf("%s: %d windows", cls, length(unique(x$window)))) +
+    theme(legend.position = "top")
+  x$bin <- react_bin(x$reactivity, x$base)
+  ord <- unique(x$window[order(x$rna)])
+  x$label <- factor(short(x$window), levels = short(rev(ord)))
+  ph <- ggplot(x[!is.na(x$nt), ], aes(cons_pos, label, fill = bin)) + geom_tile(height = 0.9) +
+    scale_fill_manual(values = REACT_COLS, drop = FALSE, name = NULL) +
+    scale_x_continuous(limits = c(0.5, n + 0.5), breaks = seq(0, n, 10), expand = c(0, 0)) +
+    labs(x = "CM consensus position", y = NULL, title = sprintf("%s: each window", cls)) +
+    theme(axis.text.y = element_text(size = 6))
+  cat("\n\n### ", cls, "\n\n", sep = "")
+  fig(pa, paste0("class_", cls, "_consensus"), max(7, 0.12 * n + 2), 3.4,
+      sprintf("%s: median reactivity per CM consensus position, colored by CM pairing; consensus structure and sequence below", cls),
+      "07d cm_positions, cm_consensus")
+  fig(ph, paste0("class_", cls, "_heatmap"), max(7, 0.12 * n + 2), 1.2 + 0.16 * length(ord),
+      sprintf("%s: reactivity of every window (rows) on the CM consensus positions", cls), "07d cm_positions")
+}
+```
+
+## 2. Example xrRNAs
+
+Stall window of each example RNA: sequence colored by reactivity, with the CM consensus structure
+on that RNA. Orange line = stall site.
+
+```{r examples, results = "asis", fig.keep = "none"}
+want <- trimws(strsplit(params$rnas, ",")[[1]])
+SEL <- unique(unlist(lapply(want, function(w) grep(w, unique(H$rna), fixed = TRUE, value = TRUE))))
+nf <- want[!sapply(want, function(w) any(grepl(w, SEL, fixed = TRUE)))]
+if (length(nf)) cat("No CM-hit window with a DMS profile for:", paste(nf, collapse = ", "), "\n\n")
+for (k in seq_len(nrow(H))) {
+  hk <- H[k, ]; if (!hk$rna %in% SEL) next
+  x <- PN[PN$rna == hk$rna, ]; L <- max(x$nt)
+  from <- max(1, hk$hit_from - 8); to <- min(L, hk$hit_to + 5)
+  z <- x[x$nt >= from & x$nt <= to, ]; z$bin <- react_bin(z$reactivity, z$base)
+  db <- dotbracket(CMP[CMP$window == hk$window, ], from, to)
+  zz <- rbind(data.frame(nt = z$nt, row = "sequence", ch = z$base, bin = z$bin),
+              data.frame(nt = z$nt, row = "CM structure", ch = strsplit(db, "")[[1]], bin = z$bin))
+  zz$row <- factor(zz$row, levels = c("CM structure", "sequence"))
+  stall <- W$stall_position[W$window == hk$window] + 1
+  pz <- ggplot(zz, aes(nt, row)) +
+    geom_tile(data = zz[zz$row == "sequence", ], aes(fill = bin), height = 0.8) +
+    geom_text(aes(label = ch, colour = row == "sequence" & bin %in% c("low", "high")), size = 3.4, family = "mono", fontface = "bold") +
+    geom_vline(xintercept = stall - 0.5, colour = COLORS[2], linewidth = 0.6) +
+    scale_fill_manual(values = REACT_COLS, drop = FALSE, name = NULL) +
+    scale_colour_manual(values = c(`TRUE` = "white", `FALSE` = INK), guide = "none") +
+    scale_x_continuous(breaks = seq(ceiling(from / 10) * 10, to, 10), expand = c(0.01, 0)) +
+    labs(x = "nucleotide", y = NULL, title = sprintf("%s, %s (E = %s)", short(hk$rna), hk$cm_class, fmt_p(hk$evalue)))
+  nm <- paste0("example_", short(hk$rna), "_stall", stall)
+  cat("\n\n### ", short(hk$rna), ", stall ", stall, "\n\n", sep = "")
+  fig(pz, nm, max(6, 0.13 * (to - from + 1) + 1.5), 1.8,
+      sprintf("%s stall %d: sequence colored by reactivity, %s consensus structure", short(hk$rna), stall, hk$cm_class),
+      "07c per_nt, 07d cm_hits/cm_pairs")
+  cat("```\n", paste(z$base, collapse = ""), "\n", db, "\n```\n\n", sep = "")
+}
+```
+
+## 3. Windows without a CM: candidate groups
+
+No-CM windows grouped by viral genus. `p`/`q`: do the group's reactivity patterns resemble each
+other more than random windows do (06b permutation test; q = BH-adjusted)? Groups with p < 0.05
+are drawn below and are the candidates for alignment and a new CM (step 08a).
+
+```{r groups}
+g <- TX[TX$rank == "genus" & TX$subset == "no_CM" & TX$n_windows >= params$min_group,
+        c("group", "n_windows", "n_rnas", "mean_within_distance", "null_mean", "p_value", "q_value")]
+tbl(g[order(g$p_value), ], 4)
+```
+
+```{r group-figs, results = "asis", fig.keep = "none"}
+for (gr in g$group[g$p_value < 0.05]) {
+  ww <- W[W$cm_class == "none" & W$genus %in% gr, ]
+  rows <- do.call(rbind, lapply(seq_len(nrow(ww)), function(k) {
+    s0 <- ww$stall_position[k] + 1
+    x <- PN[PN$rna == ww$rna[k] & PN$nt >= s0 - 10 & PN$nt <= s0 + 90, ]
+    if (!nrow(x)) return(NULL)
+    data.frame(window = short(ww$window[k]), offset = x$nt - s0, base = x$base, reactivity = x$reactivity)
+  }))
+  if (is.null(rows)) next
+  rows$bin <- react_bin(rows$reactivity, rows$base)
+  p <- ggplot(rows, aes(offset, window, fill = bin)) + geom_tile(height = 0.92) +
+    geom_text(aes(label = base, colour = bin %in% c("low", "high")), size = 1.9, family = "mono") +
+    geom_vline(xintercept = -0.5, colour = COLORS[2], linewidth = 0.6) +
+    scale_fill_manual(values = REACT_COLS, drop = FALSE, name = NULL) +
+    scale_colour_manual(values = c(`TRUE` = "white", `FALSE` = INK), guide = "none") +
+    scale_x_continuous(breaks = seq(-10, 90, 10), expand = c(0, 0)) +
+    labs(x = "position from stall site (nt)", y = NULL,
+         title = sprintf("%s (no CM): %d windows, shared pattern p = %s", gr, nrow(ww), fmt_p(g$p_value[g$group == gr])),
+         subtitle = "Not aligned: rows are lined up at the stall site only.") +
+    theme(axis.text.y = element_text(size = 6), legend.position = "top")
+  cat("\n\n### ", gr, "\n\n", sep = "")
+  fig(p, paste0("nocm_", gr), 11, 1.4 + 0.22 * nrow(ww),
+      sprintf("%s, no-CM windows: sequence and reactivity from 10 nt before to 90 nt after the stall site (unaligned)", gr),
+      "06b windows/taxon_similarity, 07c per_nt")
+}
+```
+
+```{r guide, include = FALSE}
+md <- c(sprintf("# Figure guide, %s", format(Sys.Date(), "%b %d, %Y")), "",
+        "Made by `workflows/08_cm_figures.Rmd` (DMS-MaP of the virome library, step 08).",
+        "Reactivity = A/C DMS reactivity from the md2000 profiles; G/U and positions under 2,000 reads have none.",
+        "Each figure is saved as .svg and .pdf.", "",
+        "| Figure | Shows | Data |", "|---|---|---|",
+        sprintf("| `%s` | %s | %s |", GUIDE$file, GUIDE$shows, GUIDE$from))
+writeLines(md, file.path(FIG, "FIGURE_GUIDE.md"))
+```
