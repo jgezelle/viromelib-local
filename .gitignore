@@ -33,7 +33,17 @@ __pycache__/
 
 # ── Whole trees that are data, not source
 data/
-work/
+# work/ is data, EXCEPT the curated CM set, which is source and must be versioned.
+# `work/` excludes work/infernal as a DIRECTORY and git does not descend into one, so
+# `!work/infernal/cm/**` can never match. Re-include each level on the way in.
+# Verify with: git check-ignore -v <path>   (a rule beginning with ! means NOT ignored)
+work/*
+!work/infernal/
+work/infernal/*
+!work/infernal/cm/
+work/infernal/cm/*
+!work/infernal/cm/cm_set_261021/
+!work/infernal/cm/cm_set_261021/**
 libraryDesign/
 outputs-sequencefiles/
 trash/
