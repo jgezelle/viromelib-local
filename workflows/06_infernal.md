@@ -389,4 +389,46 @@ git push -u origin main
 
 ```
 
-**move this .md into the `workflows` subdir of `viromelib`**
+# flaviLib `cmsearch` – Sep 14, 2026 
+
+### search  mlocarna output for hepacivirus genus with no CM hit 
+the stockholm alignment was manually edited following mlocarna of the no CM hepaci hits (genus fasta)
+in dir `/Users/jeaninegezelle/Desktop/viromelib/work/06_infernal/flaviLib/flaviLib_20260914`
+
+```bash
+conda activate viromelib
+cmbuild hepaci_unclas.cm hepaci_20260914_result-dedup-edit.stk
+cmbuild hepaci_20260914_result-dedup-edit.stk
+cmsearch --tblout ../tblout/hepaci_unclas.tbl hepaci_unclas.cm flavi_library_20260228pretile20260818_TRUEordered_uniqueIDs.fa
+``` 
+
+## `cmalign` 
+in dir `06_infernal`: 
+```bash
+mkdir -p cmalign
+
+grep -v "^#" ../tblout/hepaci_unclas.tbl | grep -v "^$" | \
+  awk '$10=="+" && $16<=2 {print $1"/"$8"-"$9, $8, $9, $1}' > cmalign/hits.fetchlist
+```
+
+now, run `esl-sfetch` which will generate the new .fa 
+```bash
+esl-sfetch --index flavi_library_20260228pretile20260818_TRUEordered_uniqueIDs.fa 
+
+esl-sfetch -Cf flavi_library_20260228pretile20260818_TRUEordered_uniqueIDs.fa cmalign/hits.fetchlist > cmalign/hits.fa
+
+# get counts
+grep -c "^>" cmalign/hits.fa
+```
+96 hits 
+
+### run `cmalign`
+```
+cmalign --cpu 4 -o cmalign/hits_aligned.stk hepaci_unclas.cm cmalign/hits.fa
+cmbuild -F -n hepaci_hits hepaci_hits.cm cmalign/hits_aligned.stk
+cmcalibrate --cpu 4 hepaci_hits.cm
+```
+maybe e-val less than 2 was too permissive, stk looks a little hectic. try more stringently. 
+
+**move everything in the `flaviLib` subdir of `viromelib/06_infernal` to `~/Desktop/viromelib/flaviLib`**
+
