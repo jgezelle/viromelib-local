@@ -118,6 +118,20 @@ called <- ftxt |>
   filter(!is.na(cond)) |>
   mutate(across(c(n_sites, unmatched, min_depth, p1, median_depth), parse_number))
 
+# UNIT CONSISTENCY. The floor and the bands are computed on whatever --unit the script was run
+# with (best_tile by default). The table carries that column as depth_for_band, and also R_med.
+# Panels A and C must plot THE SAME quantity the floor is drawn on, or a best-tile threshold gets
+# drawn across a median-tile axis and the Spearman in panel C describes a different variable from
+# the one in the report. (Caught 2026-10-26 on the first knit.)
+DEPTH_COL <- if ("depth_for_band" %in% names(d)) "depth_for_band" else "R_med"
+d$depth   <- d[[DEPTH_COL]]
+UNIT      <- if ("unit" %in% names(d)) as.character(d$unit[1]) else "accession"
+DEPTH_LAB <- switch(UNIT,
+                    best_tile = "control (R) reads at the accession's BEST tile",
+                    tile      = "control (R) reads per tile",
+                    "median control (R) reads per tile")
+RHO_OBS <- suppressWarnings(cor(d$tiles, d$depth, method = "spearman", use = "complete.obs"))
+
 tax <- {
   p <- file.path(INDIR, CFG$taxonomy)
   if (file.exists(p)) read_csv(p, show_col_types = FALSE) else tibble()
@@ -134,7 +148,7 @@ lab <- CFG$label |> inner_join(d, by = "accession")
 # PANEL A — the depth distribution, with the floor drawn on it.
 # log10 x: the range spans six orders of magnitude, so a linear axis would collapse the entire
 # unassayable tail into the first pixel, which is precisely the part being argued about.
-pA <- ggplot(d, aes(R_med + 1)) +
+pA <- ggplot(d, aes(depth + 1)) +
   annotate("rect", xmin = 0, xmax = FLOOR, ymin = -Inf, ymax = Inf,
            fill = BAND_COLS[["not_assayed"]], alpha = 0.10) +
   annotate("rect", xmin = FLOOR, xmax = MARGINAL, ymin = -Inf, ymax = Inf,
@@ -144,7 +158,7 @@ pA <- ggplot(d, aes(R_med + 1)) +
   geom_vline(xintercept = LIB_MED, linetype = "dotted", colour = "grey30") +
   scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
   scale_fill_manual(values = BAND_COLS, labels = BAND_LABS, drop = FALSE, na.value = "grey70") +
-  labs(x = "median control (R) reads per tile", y = "accessions", fill = NULL,
+  labs(x = DEPTH_LAB, y = "accessions", fill = NULL,
        title = "A  Input representation per accession",
        subtitle = sprintf(
          "solid: floor %s reads/tile  |  dashed: marginal top %s  |  dotted: library median %s",
@@ -155,7 +169,7 @@ pA <- ggplot(d, aes(R_med + 1)) +
 
 if (nrow(lab)) {
   pA <- pA + ggrepel::geom_text_repel(
-    data = lab, aes(x = R_med + 1, y = 0, label = nm),
+    data = lab, aes(x = depth + 1, y = 0, label = nm),
     size = 2.5, direction = "y", nudge_y = 6, segment.size = 0.2,
     min.segment.length = 0, max.overlaps = Inf, seed = 1)
 }
@@ -190,17 +204,19 @@ pB
 # Reads PER TILE should not depend on how many tiles an accession contributes if the oligo pool
 # were equimolar. A gradient means sensitivity is systematically lower for short features, which
 # weakens every "family X has no xrRNA" claim for short-UTR families.
-pC <- ggplot(d, aes(tiles, R_med + 1)) +
+pC <- ggplot(d, aes(tiles, depth + 1)) +
   geom_point(aes(colour = band), alpha = 0.55, size = 1.1) +
   geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
               colour = "grey20", linewidth = 0.4, linetype = "dashed") +
   geom_hline(yintercept = FLOOR, linewidth = 0.3) +
   scale_x_log10() + scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
   scale_colour_manual(values = BAND_COLS, drop = FALSE, guide = "none", na.value = "grey70") +
-  labs(x = "tiles contributed by the accession (log)", y = "median control reads per tile (log)",
+  labs(x = "tiles contributed by the accession (log)",
+       y = paste0(DEPTH_LAB, " (log)"),
        title = "C  Is sensitivity uniform across feature length?",
        subtitle = sprintf(
-         "Spearman %+.3f. A flat cloud would mean uniform sensitivity; a slope means short\nfeatures were assayed less deeply, so absence is weaker evidence for them.", RHO)) +
+         "Spearman %+.3f, on the same depth measure the floor uses. A flat cloud would mean uniform\nsensitivity; a slope means short features were assayed less deeply, so absence is weaker for them.",
+         RHO_OBS)) +
   theme_classic(base_size = 10) +
   theme(plot.subtitle = element_text(size = 7.5))
 pC

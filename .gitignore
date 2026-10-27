@@ -139,3 +139,11 @@ trash/
 # ── Kept deliberately: covariance models and alignments are small, versioned inputs that
 # define the CM vocabulary (decision 25), so they are NOT ignored above. Listed here only so
 # the omission reads as a choice rather than an oversight: *.cm, *.stk, *.sto.
+
+# work/infernal/* above excludes the tree, but git descends into directories that
+# hold tracked files, so loose models beside cm_set_*/ show up as untracked.
+# Infernal working files are not kept in git; the dated annotating set and the
+# candidate models are force-added for posterity.
+work/infernal/cm/*.cm
+work/infernal/cm/*.stk
+!work/infernal/cm/cand_*.cm
