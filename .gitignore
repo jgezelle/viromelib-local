@@ -47,6 +47,7 @@ work/infernal/cm/*
 libraryDesign/
 outputs-sequencefiles/
 trash/
+workflows/archive/
 
 # ── Figure inputs and outputs, at ANY depth in EITHER tree.
 # Pattern-based rather than enumerated, so it keeps working as figure directories are added
