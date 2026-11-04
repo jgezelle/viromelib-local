@@ -84,6 +84,17 @@ cluster  work/04_align, work/08_tracks   ─ scp ▶  laptop IGV inputs
 Figure inputs come only from re-run outputs under `work/<stage>/<DS>/`, md5s recorded in each figure's
 `inputs/MANIFEST.tsv`.
 
+### 1.6 Alignment directories (`work/04_align/`)
+
+| library | current alignment | notes |
+|---|---|---|
+| viromelib publication | `261019_re-run_viromelib_orderedRef/` | ordered reference; feeds peaks, sites and the Fig. 1 presence table |
+| viromelib fullBED | `261015_re-run_viromelib/` | frozen reproduction; no figure |
+| flaviLib publication | `20260903_flaviLib_150x150_trueRef/` | alignment from 2026-09-03; post-processing redone as `261021_flaviLib_150x150` |
+
+Vintage — do not use: `20260312_viromelib_150x0_fs4-prev/` (formerly `fs4`), `20260605_flaviLib/`,
+`20260812_flaviLib_75x75/`, `20260818_flaviLib_75x75_trueRef/`, `old/`.
+
 ---
 
 ## 2. Libraries
@@ -157,8 +168,15 @@ Postproc directory `$POSTPROC_DIR = $ROOT/work/07_postproc/261019_re-run_viromel
 
 | file | md5 | notes |
 |---|---|---|
-| `peaks_annotated.csv` | `4f452542f85c9c185a10bc75f258ea5a` | 2026-10-19 20:43, 24,187 rows, **5 CMs** (1a, 1b, 2, cl3, **cl4** — the pre-v9 Class 4). No dumbbell |
-| `peaks_annotated_per_accession.csv` | `f285cc4967455d28b9f424f03f1d6244` | collapsed view |
+| `peaks_annotated_known6cm.csv` | `fd243e61d584abe6404418a8c860fb22` | **2026-11-03, current Fig. 1 input** (job 1129539). 24,187 rows, 79 cols, **6 known CMs**: 1a, 1b, 2, cl3, `class4_cl4_v9_20260824`, `dumbbell_RF00525`. No `cl4`, no `class1c` |
+| `peaks_annotated_known6cm_per_accession.csv` | (MANIFEST) | collapsed, 1,520 accessions |
+| `peaks_annotated.csv` | `4f452542f85c9c185a10bc75f258ea5a` | superseded: 2026-10-19, 5 CMs with pre-v9 `cl4`, no dumbbell. Kept as the record |
+| `peaks_annotated_per_accession.csv` | `f285cc4967455d28b9f424f03f1d6244` | collapsed (five-CM) |
+
+The six-CM `inputs.md5` reuses the four 1a/1b/2/cl3 tables unchanged (same md5s as the five-CM run) and
+adds two: `class4_cl4_v9_20260824.cm.tbl` `8c7d95bedfe20b87c97fe3eaeff3a2d0`,
+`dumbbell_RF00525.cm.tbl` `3278815bb88f20219c83f1d9e2e1f00d`. The `.tbl` files still contain minus-strand
+rows; `post_process_peaks.py` drops them (section 5.3), so they never become `.cm_hit`.
 
 `peaks_annotated_inputs.md5` records the inputs that annotation used:
 
@@ -176,8 +194,11 @@ Postproc directory `$POSTPROC_DIR = $ROOT/work/07_postproc/261019_re-run_viromel
 CM search tables: `$ROOT/work/06_infernal/261019_re-run_viromelib_orderedRef/` (five `.tbl`, listed above).
 Final sites: `$POSTPROC_DIR/261019_re-run_viromelib_orderedRef_orderedRef.sites_final.csv`.
 
-**Current annotation carries five CMs and the pre-v9 Class 4; it has no dumbbell and no class4_v9.**
-Figure 1 requires the six known models, so a re-annotation is required — section 11.
+The six-CM re-annotation was run on 2026-11-03 (section 11) and is the current Fig. 1 input.
+Figure 1A reads the peaks table directly and computes the XR-positive set from `n_reps_passing`; it does
+not read `sites_final`, and the gates are unchanged (same `peaks_combined_with_seqs.csv`, md5
+`1892587819…`), so the 391/286/264 numbers hold and **Fig. 1A can be knit from `known6cm` without
+re-running step 13.** Step 13 is still needed to produce the `known6cm` `sites_final` for the rank plot.
 
 Result numbers (unchanged by re-annotation, which does not touch the gates):
 
@@ -232,7 +253,20 @@ Detectability floor (decision 29): 123 control reads, best tile; marginal to 2,3
 
 All 7 md5s verified end to end across laptop, cluster `$CMDIR`, and the run-log checksums on 2026-10-26.
 Re-verify after any model changes, before re-annotating. The hand-off (laptop → `$CMDIR`) is manual; the
-md5 is the guard.
+md5 is the guard. Applied-copy (`$CMDIR`) md5s observed 2026-11-03:
+`class4_cl4_v9_20260824.cm` `37cd10beaae8ecbd1f1141565c839cd7`,
+`dumbbell_RF00525.cm` `fe97a305f203ef660518ba94e62ef34b` (confirm against the laptop `cm_set_261021`).
+
+### 5.3 Strand (decision 36)
+
+`cmsearch` searches both strands; the ordered-reference `.tbl` files contain minus-strand rows
+(`class4_v9` 13, `dumbbell` 1, measured 2026-11-03). The library is +ssRNA, so minus-strand hits are
+artifacts. `post_process_peaks.py` (lines 185–193: reads `strand = parts[9]`, `if strand != "+": continue`)
+drops them, so the step-11 annotation — current and the 2026-10-19 one — is plus-strand only. **Decision 36
+is resolved for the annotation path.** It remains open for any figure that reads a `.tbl` directly (the
+CM-distribution R notebooks via `read_tblout`, which do not read the strand column); the strand filter
+must be added there, not in the search. The `--incE 1e-10` tightening in decision 36 is a separate call,
+not yet applied to viromelib.
 
 ### 5.2 Known before this study vs developed in it
 
@@ -270,7 +304,7 @@ Input filenames carry the run, e.g. `261019_re-run_viromelib_orderedRef.peaks_an
 | directory | notebook (live) | library |
 |---|---|---|
 | `figures/fig1/` | `fig1A_v8_4panel.Rmd` (v7 → `archive/`) | viromelib |
-| `figures/rank/` | `rank_plot_v9_20261019.Rmd` | viromelib |
+| `figures/rank/` | `rank_plot_v10_20261103.Rmd` (v9 kept alongside, not replaced) | viromelib |
 | `figures/ncbi_virus_space/` | `ncbi_virus_space_20261020.Rmd` | viromelib |
 | `figures/representation/` | `representation_floor_20261026.Rmd` (one notebook, `LIB` switch, two figures) | both |
 | `figures/IGV/` | from `scripts/make_igv_figures.py` (cluster) | both |
@@ -338,8 +372,8 @@ Each input is copied from a re-run output, renamed with its run prefix, and reco
 
 | figure | status | needs before final |
 |---|---|---|
-| viromelib Fig. 1A | v8 built 2026-11-03, not knit | six-CM re-annotation (section 11); decision 32 (denominator) |
-| viromelib rank plot | needs change | path update (11.4); HIGHLIGHT name; `stall_reads ≥ 10` on `all`; bands after decision 32; six-CM columns |
+| viromelib Fig. 1A | **knit 2026-11-03** from `known6cm` (286 XR-positive, 58 with a shown class) | presence table confirmed orderedRef (§11.6); decision 32 (denominator); verify Class 2 = 0 (decision 28). No step 13 needed |
+| viromelib rank plot (`rank_plot_v10_20261103.Rmd`; v9 kept) | **CM migrated 2026-11-03** (known6cm: 1a/1b/2/3/4 + dumbbell, no class1c; class4→v9; HIGHLIGHT renamed; paths → known6cm; OUT `plots/20261103_v9_known6cm`) | known6cm `.sites.csv` produced 2026-11-03 (step 13, §11.4; 391 sites, 87 CM hits) — download it to the input subdir; `stall_reads ≥ 10` on `all` not yet applied (column is `stall_reads_treated_R1..R3` in the peaks file); detectability bands (decision 32) |
 | flaviLib rank plot | needs change | remove HCV; negative control (decision 30); `stall_reads ≥ 10`; bands; resolve `rank_matches_input_stall_site_rank: false` |
 | flaviLib input distribution | fixes unverified | a knit |
 | NCBI virus space | done | — |
@@ -363,6 +397,124 @@ Each input is copied from a re-run output, renamed with its run prefix, and reco
    model's column is absent, so the figure cannot ship missing a known class. The knit prints the CM
    columns found and records the peaks md5 and CM columns in the QC log.
 7. Output to `figures/fig1/plots/20261103_v8_greyfix_noFiers/`.
+8. CM-class legend moved to the bottom of the CM panel; at top-right its semi-transparent box
+   overlapped a family row and read as a phantom light-grey bar.
+9. **Panel 2 (XR-positive) simplified:** input backdrop and phylum colours dropped; XR-positive counts
+   drawn in `GREY_LIB`, axis scaled to the XR counts. Phylum is still shown by the panel-1 brackets. The
+   grey bar is now identical to the CM panel's denominator. **Panel 3 (CM matches) is the intended main
+   Figure-1 panel** — the XR-positive grey bar with CM class (or CM-hit yes/no) overlaid. Open: panels 2
+   and 3 now show the same grey XR-positive bar, so panel 2 duplicates panel 3's backdrop; decide whether
+   panel 2 stays in the main figure or moves to a supplement / is dropped.
+
+### 9.2 Figure 1A counts and definitions (knit 2026-11-03, six-CM `known6cm` input)
+
+| quantity | count | definition |
+|---|---:|---|
+| accessions ordered | 1,226 (**1,224** excl. Fiersviridae) | in the ordered pool `library_v4.fa` |
+| viruses ordered (TaxID) | 1,055 (1,054 excl. Fiers) | distinct TaxIDs ordered |
+| features ordered | 1,521 (**1,514** excl. Fiers) | feature records in the ordered reference; 1,514 parsed in the knit |
+| features ≥ 100 nt (panel 4) | 1,514 = 1,167 3′UTR + 347 intergenic | feature length ≥ `MIN_LEN` (100 nt) |
+| accessions with input coverage | **1,223** | present in the RppH input (below) |
+| accessions XR-positive (output) | **286** | ≥ 1 tile passing all gates in ≥ 2 of 3 reps (below) |
+| features with a site (output) | 301 | from `sites_final`; unchanged by the six-CM re-annotation |
+| viruses with a site (output) | 264 | distinct TaxIDs among XR-positive |
+| XR-positive with a shown-model hit | **58** of 286 | best-tile hit to 1a/1b/2/3/4/dumbbell |
+
+**Input coverage (the "ordered library" / grey denominator).** From `accession_presence_by_sample.py`
+(output `accession_presence_by_sample_261019.csv`): an accession is "present" in a sample when **any one
+of its reference segments has ≥ 1 mapped read** (`int(mapped) > 0`, `samtools idxstats`) in that sample's
+`k1.mq0` BAM — one reported alignment, MAPQ ≥ 0, so multi-mapping reads count. `in_r_input` = present in
+≥ 1 of the three RppH-only (R) replicates. **So "present" is literally ≥ 1 read, multimapper-inclusive,
+collapsed to the accession** — a pool-presence call, not a depth call. The grey bars in panels 1 and 2 are
+this set (**1,223**): ordered **and** present, not the full 1,224 ordered — one ordered non-Fiers
+accession had no R read at all. **Decision 32:** because the threshold is one read, a non-detection
+against this denominator cannot be called a biological negative; a detectability floor (as derived for
+flaviLib, best-tile control reads) should replace it before any "fraction of viruses with a stall" rate
+is quoted.
+
+**Presence-table provenance (confirmed 2026-11-03).** `accession_presence_by_sample_261019.csv` is the
+orderedRef table: the canonical copy is
+`work/07_postproc/261019_re-run_viromelib_orderedRef/orderedRef/accession_presence_by_sample_261019.csv`,
+created 2026-10-19 22:58 with the orderedRef run, and its accession set matches the ordered library
+(1,223 of 1,224 non-Fiers present in R, per the knit). It is **not** from the retired `fs4` alignment (now
+`work/04_align/20260312_viromelib_150x0_fs4-prev/`); the fs4-era file is the separate, unused
+`accession_presence_by_sample20260820.csv`. The one remaining denominator question is therefore decision
+32 (the `>0`-read threshold), not provenance.
+
+**Output / XR-positive.** A tile passes when `treated_sf ≥ 0.3`, `ctrl_sf ≤ 0.1`, `fold_change ≥ 3`,
+`stall_reads ≥ 10`, `qvalue ≤ 0.01`, in ≥ `MIN_REPS` (2 of 3) replicates. An accession is XR-positive if
+at least one of its tiles passes; it is counted once, at its best tile (max `n_reps_passing`). Knit
+confirmed `treated_sf` 0.3003–0.9246 and q 2.5e-13–2.85e-3.
+
+**CM distribution among the 286 XR-positive** (best-tile class, shown models only): Class 1a 15, 1b 20,
+2 **0**, 3 15, 4 7, Dumbbell 1, no shown-model hit 228. The per-accession class is the highest-priority
+hit on the best tile (1a > 1b > 2 > 3 > 4 > dumbbell); **Class 2 = 0 may be priority-masking** (a Class 2
+hit co-occurring with a higher-priority class, or sitting on a non-best tile) rather than a true absence.
+Verify against the site-level CM table before stating "no Class 2" — this is part of decision 28.
+
+Families on the axis: 55 (families with ≥ 1 input accession), 3 phyla plus Unannotated. Full taxonomy
+table holds 1,676 accessions / 57 families (broader than the ordered set; the join selects the ordered).
+
+### 9.3 Figure 1A legend (draft)
+
+> **Figure 1A. Composition and exoribonuclease resistance of the +ssRNA virome library.** Rows are virus
+> families, grouped by phylum and ordered by the number of library accessions. **Panel 1 (Library vs
+> NCBI):** light grey, RefSeq complete nucleotide records per family not represented in the library
+> (Entrez nuccore, `"<family>"[Organism] AND refseq[filter] AND complete[completeness]`, 2026-10-19;
+> records, so segments count — see §9.4); dark grey, library accessions present in the RppH-only input
+> (≥ 1 mapped read in ≥ 1 of three control replicates). **Panel 2 (XR-positive):** dark grey,
+> accessions with ≥ 1 exoribonuclease-resistant (XR) site (phylum shown by the panel-1 brackets).
+> An XR site is a tile with treated stall fraction ≥ 0.3, control stall fraction ≤ 0.1, ≥ 3-fold
+> enrichment, ≥ 10 stall reads and q ≤ 0.01 in ≥ 2 of 3 replicates; each accession is counted once at its
+> best tile. **Panel 3 (CM matches):** dark grey, XR-positive accessions with no hit to a previously
+> described model; colour, the covariance-model class of the best-tile hit — xrRNA classes 1a, 1b, 2, 3, 4
+> and the dumbbell element (Rfam RF00525). Models defined in this study (e.g. class 1c) are annotated but
+> not shown. **Panel 4 (Feature length):** 3′UTR (orange) and intergenic (blue) feature lengths; features
+> < 100 nt excluded. The library comprises 1,224 accessions (1,054 viruses; 1,514 features) after
+> excluding two Fiersviridae bacteriophage accessions included through host mis-annotation; 1,223
+> accessions were detected in the input, 286 were XR-positive, and 58 of those carried a previously
+> described class. Two caveats apply, to the denominator and to the per-class counts (detectability
+> floor, best-tile class assignment); see decisions 32 and 28.
+
+### 9.4 Panel 1 — what "RefSeq, not in library" counts
+
+Light grey = a per-family count of RefSeq complete records from NCBI (`ncbi_family_counts_261019.csv`);
+dark grey = the library's input-detected accessions. The NCBI count is an Entrez **nuccore** query run
+**2026-10-19**, one per family:
+
+```
+"<FAMILY>"[Organism] AND refseq[filter] AND complete[completeness]
+```
+
+Term by term:
+- `[Organism]` — records whose organism falls anywhere under that family's **full taxonomy subtree**
+  (every genus, species and isolate below it), not only records tagged exactly with the family name.
+- `refseq[filter]` — RefSeq curated records only (`NC_`/`NG_`… accessions), not primary GenBank.
+- `complete[completeness]` — the record's completeness property is "complete" (complete sequence/genome,
+  not partial). This is a **nuccore record-level flag, not the assembly-level "Complete Genome" status**,
+  and not an assembly (`assembly` DB) query.
+
+Not applied: no host filter, no molecule-type filter, no "latest RefSeq" filter — the family already being
+an RNA-virus family is what scopes the query.
+
+Unit and caveats:
+- It counts RefSeq complete **nucleotide records**, so a segmented genome contributes one record per
+  segment and multiple RefSeq isolates each count. It is **not** a species or genome count. This is a
+  different quantity from Supp. Fig. 2 (NCBI virus space), which is species-level and applies none of the
+  design criteria (decision 24) — the two numbers will not match.
+- The two bars are **independent counts, not a per-accession set difference**: light = count(RefSeq
+  complete records), dark = count(ordered-and-input-detected library accessions). "Not in library" is
+  their visible difference. Because library accessions are not guaranteed to be a subset of the
+  RefSeq-complete set (a library accession may be a non-RefSeq or partial record), the plotted light bar
+  is `n_ncbi_capped = max(n_ncbi, n_input)` — capped so it never falls below the library bar; a family
+  with more library accessions than RefSeq-complete records shows no light remainder.
+- A family absent from the count file (or with 0) shows only the library bar.
+- **Confirmed against the script** (`plots/fetch_ncbi_family_counts.py` line 31):
+  `query = f'"{family}"[Organism] AND refseq[filter] AND complete[completeness]'`, run with
+  `Entrez.esearch(db="nuccore", retmax=0)`, so each family's value is the esearch **total record count**.
+  `scripts/ncbi_family_totals.py` reads these into its `refseq_complete_genomes` column. The script's
+  docstring calls them "complete genomes," but the term is the record-level completeness flag, so the
+  record-count caveat above (segments and isolates each count) is the accurate reading.
 
 ---
 
@@ -379,12 +531,12 @@ Each input is copied from a re-run output, renamed with its run prefix, and reco
 | 31 | tile-count/depth gradient: length or sub-pool | methods, representation figure |
 | 32 | viromelib detectability floor | Fig. 1 denominator, rank plot bands |
 | 35 | `cmstat` on CMs (class4_v9 first) | CM panels |
-| 36 | minus-strand cmsearch hits (`--toponly`) | CM panels |
+| 36 | minus-strand cmsearch hits — resolved for annotation (parser filters strand, section 5.3); open for direct-`.tbl` figures | CM-distribution panels only |
 | 37 | PLLG "CM-blind" re-test on full features | claims a clade lacks a known class |
 | — | flaviLib `rank_matches_input_stall_site_rank: false` | flaviLib rank plot ordering |
 
-Settled and applied: 3, 9, 18, 19, 20, 21, 22, 23, 24, 25, 29, 33, 34, and (2026-11-03) the known-going-in
-rule for Fig. 1.
+Settled and applied: 3, 9, 18, 19, 20, 21, 22, 23, 24, 25, 29, 33, 34, 36 (annotation path), and
+(2026-11-03) the known-going-in rule for Fig. 1.
 
 ---
 
@@ -437,24 +589,43 @@ md5sum $F; head -1 $F | tr ',' '\n' | grep '\.cm_hit$'   # expect 6 columns, inc
 cat $POSTPROC_DIR/peaks_annotated_known6cm_inputs.md5
 ```
 
-### 11.4 Final sites (step 13), then confirm the site set is unchanged
+### 11.4 Final sites (step 13) for the rank plot
 
-Re-run the 2026-10-19 step-13 calls with the new input and a `known6cm` prefix. Recover the exact
-command lines from the shell history:
+The rank plot's `passing` set needs the `known6cm` `sites_final`. The orderedRef step-13 command (shell
+history, 2026-10-20 09:04) was `apply_publication_cutoffs.py $PP/peaks_annotated.csv --out-prefix $P
+--xlsx --snapshot-manifest $ROOT/data/genbank_snapshot_261016/MANIFEST.tsv --tile-bed $BED`, with
+`$P = $POSTPROC_DIR/${DS}_${AN}`. Repeat it on the six-CM peaks with a `known6cm` prefix:
 
 ```bash
-history | grep -E 'apply_publication_cutoffs|stall_distance_to_stop|flag_shared_oligos|make_release_tracks' | tail -20
-# compare old vs new site set and CM-hit count
-python3 - $POSTPROC_DIR/261019_re-run_viromelib_orderedRef_orderedRef.sites_final.csv \
-          $POSTPROC_DIR/261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites_final.csv <<'PY'
-import sys, pandas as pd
-a,b=(pd.read_csv(f) for f in sys.argv[1:3]); k=["accession","stall_site_genomic_position"]
-print("sites old/new:",len(a),len(b),"| same set:",set(map(tuple,a[k].values))==set(map(tuple,b[k].values)))
-print("cm_hit cols new:",[c for c in b.columns if c.endswith(".cm_hit")])
-PY
+source /groups/as6282_gp/scratch_bkup/jgg2144/xrrna_seq/viromelib/scripts/env_261019_orderedRef.sh
+P6=$POSTPROC_DIR/${DS}_${AN}.known6cm
+python3 $ROOT/scripts/apply_publication_cutoffs.py $POSTPROC_DIR/peaks_annotated_known6cm.csv \
+  --out-prefix $P6 --xlsx \
+  --snapshot-manifest $ROOT/data/genbank_snapshot_261016/MANIFEST.tsv \
+  --tile-bed $BED 2>&1 | tee $LOG/step13a_known6cm.txt
+head -1 ${P6}.sites.csv | tr ',' '\n' | grep '\.cm_hit$'   # 6 cols incl v9 + dumbbell
+wc -l ${P6}.sites.csv                                      # 392 = 391 sites + header
 ```
 
-Expect 391 sites in both and an identical site set.
+The script writes `261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites.csv` (plus `.tile_rows.csv`
+and `.xlsx`) — **`.sites.csv`, not `.sites_final.csv`**; the `_final` file in the five-CM run came from a
+later step. The rank notebook's `SITES_CSV` points at this `.sites.csv`. `--snapshot-manifest` puts
+`organism` into it (used for the `passing` labels). For the rank plot only `apply_publication_cutoffs.py`
+is needed; the rest of the chain (`stall_distance_to_stop.py`, `flag_shared_oligos.py`,
+`make_release_tracks.py sites`) can be rerun later for the release.
+
+Ran 2026-11-03 (`summary.json`): 391 unique sites, 301 features, 286 accessions, **87 with a CM hit**,
+`rank_matches_input_stall_site_rank: true`, 154 sites at 2/3 reps + 237 at 3/3, 7 site pairs within 1 nt
+(decision 4). Site set identical to the five-CM run, as expected.
+
+Download into the rank plot's input subdir. `$POSTPROC_DIR` is a cluster-only variable, so on the laptop
+use the full remote path:
+
+```bash
+F1=~/Desktop/viromelib/figures/fig1/inputs/20261019_rerun_viromelib_ordered
+scp jgg2144@hpc.c2b2.columbia.edu:"/groups/as6282_gp/scratch_bkup/jgg2144/xrrna_seq/viromelib/work/07_postproc/261019_re-run_viromelib_orderedRef/orderedRef/261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites.csv" "$F1/"
+md5 -r "$F1/261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites.csv"
+```
 
 ### 11.5 Download to the laptop and point the notebook at it
 
@@ -470,7 +641,29 @@ scp jgg2144@hpc.c2b2.columbia.edu:"$SRC" \
 `261019_re-run_viromelib_orderedRef.peaks_annotated_known6cm.csv` and reads Class 4 from the v9 column.
 No notebook edit is needed once the file is in place.
 
-### 11.6 Directory flattening and the rank plot
+### 11.6 Input-presence table (provenance confirmed 2026-11-03)
+
+`accession_presence_by_sample_261019.csv` is the orderedRef presence table — canonical copy in
+`$POSTPROC_DIR`, created 2026-10-19 with the orderedRef run, accession set matching the ordered library —
+not the retired `fs4` / `20260312_viromelib_150x0_fs4-prev` alignment. **No rebuild is needed.** It still
+carries the `>0`-read (one-read, multimapper-inclusive) threshold, which is decision 32.
+
+Only if it is ever regenerated: build it against the current alignment (`work/04_align/$DS`), not the
+vintage dir. `accession_presence_by_sample.py` defaults to the old path, so pass `--bam-dir` and, if the
+BAM names differ, edit `SAMPLES` (better: read `$SAMPLE_SHEET`, decision 14):
+
+```bash
+python3 $ROOT/scripts/accession_presence_by_sample.py \
+  --bam-dir $ROOT/work/04_align/$DS \
+  --out $POSTPROC_DIR/accession_presence_by_sample_261019_orderedRef.csv
+head -1 $POSTPROC_DIR/accession_presence_by_sample_261019_orderedRef.csv
+```
+
+Download that file into `fig1/inputs/` and point `PRESENCE_FILE` at it. Caveats: presence depends on the
+`k1.mq0` filtering (multimapper-inclusive) — confirm the orderedRef BAMs are the same filtered BAMs, or
+the semantics change; and it remains a `>0`-read call (decision 32).
+
+### 11.7 Directory flattening and the rank plot
 
 `fig1/inputs/` still has the legacy `20261019_rerun_viromelib_ordered/` subdirectory. Flatten it (move the
 four non-peaks inputs up, drop the superseded five-CM `peaks_annotated.csv`), give `figures/rank/` its own
@@ -482,7 +675,7 @@ cd ~/Desktop/viromelib
 git add workflows/FIGURES_log_consolidate_20261103.md \
         figures/fig1/fig1A_v8_4panel.Rmd figures/fig1/archive/fig1A_v7_4panel.Rmd \
         figures/fig1/inputs/MANIFEST.tsv \
-        figures/rank/rank_plot_v9_20261019.Rmd figures/rank/inputs/MANIFEST.tsv
+        figures/rank/rank_plot_v10_20261103.Rmd figures/rank/inputs/MANIFEST.tsv
 git status --short
 git commit -m "Figures: consolidated reference 20261103; fig1A v8 (6 known CMs incl dumbbell)"
 ```

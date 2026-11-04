@@ -1,0 +1,698 @@
+---
+title: "Virome library — Figure 1A (v8, 4 panels)"
+author: ""
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Overview
+
+Four panels, left to right.
+
+| Panel | Description |
+|-------|-------------|
+| 1 | `GREY_REFSEQ` = NCBI RefSeq complete genomes not in the library; `GREY_LIB` = ordered library |
+| 2 | `GREY_LIB` = accessions with an XR (stall) site (no input backdrop, no phylum colour) |
+| 3 | `GREY_LIB` = XR-positive accessions (same bar as panel 2); colour = CM class / CM hit over top. **Main Figure-1 panel.** |
+| 4 | 3′UTR (orange) + intergenic (blue) feature length boxplots |
+
+### Changes from v7
+
+1. **Grey scheme.** Two greys, each with one meaning across all panels:
+   - `GREY_REFSEQ` (light): in RefSeq, not in the library. Used in panel 1 only.
+   - `GREY_LIB` (dark): in the library. Used as the denominator of every panel.
+
+   In v7 the panel-1 "not in library" grey (`grey88`) was the same value as the panel-4 "XR hit,
+   no CM hit" backdrop, so two opposite meanings shared one shade. Every panel's grey now marks that
+   panel's denominator, which is always a subset of the library, and `grey88` appears nowhere else.
+2. **Fiersviridae excluded at every input**, by family name and by accession
+   (`EXCLUDE_FAMILIES`, `EXCLUDE_ACCESSIONS`), not only at the taxonomy table. A `stopifnot` halts the
+   knit if any excluded family or accession reaches a plotted table.
+3. Legend keys added for both greys (panels 1 and 3), so the shades are defined on the figure itself.
+4. **Only models known before this study are shown**: xrRNA classes 1a, 1b, 2, 3, 4 and the dumbbell
+   element (Rfam RF00525, published). Models developed during the study (class1c, later an expanded
+   class 1b and other subclasses) stay in the peaks table but are not drawn, and `any_hit` is recomputed
+   over the shown models only, so they do not count toward "with a CM match".
+
+**Sample identity:** R1/R2/R3 = RppH-only (no Xrn1) = input; X1/X2/X3 = Xrn1 = output.
+
+**XR-positive:** tiles pass when `treated_sf ≥ 0.3`, `ctrl_sf ≤ 0.1`, `fold_change ≥ 3`,
+`stall_reads ≥ 10`, `qvalue ≤ 0.01` in ≥ `MIN_REPS` replicates. Each accession counted once
+(best tile).
+
+**Denominator throughout is the ordered library** — 1,521 features / 1,226 genome accessions
+(1,055 viruses), less the 2 excluded Fiersviridae accessions.
+
+---
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(glue)
+library(cowplot)
+library(svglite)
+
+# ── Config ───────────────────────────────────────────────────────────────────
+# Inputs currently in the legacy subdirectory inputs/20261019_rerun_viromelib_ordered/.
+# LAYOUT.txt section 3 prefers a FLAT inputs/ with the run in the filename; when you flatten
+# (FIGURES_log_consolidate_20261103.md section 11.6), set INPUT_DIR back to ".../fig1/inputs".
+INPUT_DIR  <- "~/Desktop/viromelib/figures/fig1/inputs/20261019_rerun_viromelib_ordered"
+
+FASTA_FILE    <- file.path(INPUT_DIR, "pilot_library_20260319.uniqueIDs.ordered.fa")
+CSV_FILE      <- file.path(INPUT_DIR, "virus_taxonomy_261019.csv")
+PRESENCE_FILE <- file.path(INPUT_DIR, "accession_presence_by_sample_261019.csv")
+# Six-CM re-annotation of the viromelib orderedRef run: the models known before this study
+# (1a, 1b, 2, cl3, class4_cl4_v9, dumbbell_RF00525). Produced by the re-annotation in
+# FIGURES_log_consolidate_20261103.md section 11, downloaded, run-prefixed. md5 in inputs/MANIFEST.tsv.
+# The 2026-10-19 five-CM peaks_annotated.csv (md5 4f452542...) predates this and lacks dumbbell.
+PEAKS_FILE    <- file.path(INPUT_DIR, "261019_re-run_viromelib_orderedRef.peaks_annotated_known6cm.csv")
+NCBI_FILE     <- file.path(INPUT_DIR, "ncbi_family_counts_261019.csv")
+
+# Excluded from the figure (run log, decision 23):
+#   Fiersviridae -- NC_055057.1 and NC_074553.1 ("Leviviridae sp.", TaxID 2027243) are
+#   bacteriophages from rhesus macaque faecal metagenomes. They passed the eukaryotic-host design
+#   query because NCBI records the host of the sample, not of the phage. Neither has a passing
+#   site. The family holds thousands of phage species, so its RefSeq bar would dominate a
+#   eukaryotic-host family axis while representing two accidental accessions.
+#   Excluded by family AND by accession, so a family-label difference between input tables
+#   cannot let them back in. Set both to character(0) to show them.
+EXCLUDE_FAMILIES   <- c("Fiersviridae", "Leviviridae")
+EXCLUDE_ACCESSIONS <- c("NC_055057.1", "NC_074553.1")
+EXCLUDE_ACC_CLEAN  <- sub("\\.\\d+$", "", EXCLUDE_ACCESSIONS)
+
+# Greys: one meaning each, across all panels
+GREY_REFSEQ <- "grey88"   # in RefSeq, not in the library (panel 1 only)
+GREY_LIB    <- "grey45"   # in the library; the denominator of every panel
+
+OUT_DIR   <- "~/Desktop/viromelib/figures/fig1/plots/20261103_v8_greyfix_noFiers"
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+OUT_PDF_A <- file.path(OUT_DIR, "fig1a_v8_anyhit.pdf")
+OUT_PDF_B <- file.path(OUT_DIR, "fig1a_v8_cmclass.pdf")
+OUT_SVG_A <- file.path(OUT_DIR, "fig1a_v8_anyhit.svg")
+OUT_SVG_B <- file.path(OUT_DIR, "fig1a_v8_cmclass.svg")
+OUT_CSV   <- file.path(OUT_DIR, "virome_summary.csv")
+OUT_DET   <- file.path(OUT_DIR, "detection_summary.csv")
+OUT_QC    <- file.path(OUT_DIR, "fig1a_qc_checks.txt")
+
+MIN_REPS    <- 2
+MIN_LEN     <- 100
+BAR_WIDTH   <- 0.72
+POINT_ALPHA <- 0.35
+FIGURE_W    <- 10.0
+FIGURE_H    <- 7.6
+
+M_LEFT  <- margin(1, 0.5, 1, 2)
+M_MID   <- margin(1, 0.5, 1, 0.5)
+M_RIGHT <- margin(1, 2, 1, 0.5)
+
+# Legend inset positions (npc). Adjust after the first knit if a legend covers bars.
+LEG_P1 <- list(x = 0.84, y = 0.99, jx = 1, jy = 1)
+# CM legend at bottom-right: at top-right (y=0.99) its semi-transparent box overlapped a family
+# row (Botourmiaviridae) and read as a phantom light-grey bar. Bottom-right sits over empty space.
+LEG_CM <- list(x = 0.99, y = 0.02, jx = 1, jy = 0)
+
+# Figure 1 shows ONLY models known before this study (decided 2026-11-03):
+# xrRNA classes 1a, 1b, 2, 3, 4 and the dumbbell element (Rfam RF00525, published, hence known
+# going in). Models developed during the study are annotated in the peaks table but NOT drawn,
+# and do not count toward "with a CM match":
+#   class1c.cm_hit          pestivirus class 1c, defined in this study
+#   future in-study models  e.g. an expanded class 1b, orthoflavivirus subclasses
+# When an expanded class 1b model exists, Fig. 1 keeps the ORIGINAL CL_Class_1b_xrRNA_final.
+# Dumbbell is a distinct 3'UTR element, not an xrRNA class, so it is labelled "Dumbbell" rather
+# than a numbered class and sits last in the single-class priority.
+CM_COLS <- c(
+  "Class 1a" = "CL_Class_1a_xrRNA_final.cm_hit",
+  "Class 1b" = "CL_Class_1b_xrRNA_final.cm_hit",
+  "Class 2"  = "CL_Class_2_xrRNA_final.cm_hit",
+  "Class 3"  = "cl3_NAR_2025.align.mpkadded.edited.confident.dedup.IDcurated.SS_cons.cm_hit",
+  "Class 4"  = "cl4.cm_hit",   # replaced by the v9 column when present; see CLASS4_PREFERRED
+  "Dumbbell" = "dumbbell_RF00525.cm_hit"
+)
+# Class 4 model: decision 9 selected v9. The class was known before the study (Dilweg et al. 2023),
+# but the v9 model was refit in this study (nine rounds). Set to "cl4.cm_hit" to use the
+# pre-study model instead.
+CLASS4_PREFERRED <- "class4_cl4_v9_20260824.cm_hit"
+```
+
+---
+
+## 1. Parse FASTA
+
+```{r parse_fasta}
+lines   <- readLines(FASTA_FILE)
+headers <- sub("^>", "", lines[startsWith(lines, ">")])
+rx      <- "^([^|]+)\\|(\\d+)-(\\d+)_(.+)$"
+matched <- regmatches(headers, regexec(rx, headers))
+
+parse_one <- function(m) {
+  if (length(m) < 5) return(NULL)
+  data.frame(acc_clean = sub("\\.\\d+$", "", m[2]),
+             length    = as.integer(m[4]) - as.integer(m[3]),
+             feature   = m[5], stringsAsFactors = FALSE)
+}
+fasta_df <- bind_rows(lapply(matched, parse_one)) %>%
+  filter(!acc_clean %in% EXCLUDE_ACC_CLEAN)
+
+utr_df <- fasta_df %>%
+  filter(grepl("3UTR", feature, ignore.case = TRUE), length >= MIN_LEN) %>%
+  select(acc_clean, length)
+
+ig_df <- fasta_df %>%
+  filter(grepl("intergenic", feature, ignore.case = TRUE), length >= MIN_LEN) %>%
+  select(acc_clean, length)
+
+message(glue("{nrow(fasta_df)} features parsed | {nrow(utr_df)} 3'UTR | {nrow(ig_df)} intergenic >= {MIN_LEN} nt"))
+```
+
+---
+
+## 2. Taxonomy
+
+```{r taxonomy}
+tax_all <- read_csv(CSV_FILE, show_col_types = FALSE) %>%
+  rename_with(tolower) %>%
+  mutate(
+    acc_clean = sub("\\.\\d+$", "", accession),
+    phylum    = if_else(is.na(phylum) | phylum == "", "Unannotated", phylum),
+    family    = if_else(is.na(family) | family == "" | family == "Unannotated",
+                        "Unannotated", family)
+  )
+
+excluded <- tax_all %>%
+  filter(family %in% EXCLUDE_FAMILIES | acc_clean %in% EXCLUDE_ACC_CLEAN)
+message(glue("EXCLUDED {nrow(excluded)} accession(s): ",
+             "{paste(excluded$accession, ' (', excluded$family, ')', sep = '', collapse = ', ')}"))
+if (nrow(excluded) != length(EXCLUDE_ACCESSIONS))
+  warning(glue("expected {length(EXCLUDE_ACCESSIONS)} excluded accessions, found {nrow(excluded)}"))
+
+tax_df <- tax_all %>%
+  filter(!family %in% EXCLUDE_FAMILIES, !acc_clean %in% EXCLUDE_ACC_CLEAN)
+
+message(glue("taxonomy: {nrow(tax_df)} accessions | {n_distinct(tax_df$family)} families | ",
+             "{n_distinct(tax_df$phylum)} phyla"))
+```
+
+---
+
+## 3. NCBI RefSeq totals
+
+```{r ncbi}
+# RefSeq complete genome records per family, Entrez nuccore 2026-10-19:
+#   "FAMILY"[Organism] AND refseq[filter] AND complete[completeness]
+ncbi_counts <- read_csv(NCBI_FILE, show_col_types = FALSE) %>%
+  rename(n_ncbi = ncbi_total) %>%
+  filter(!is.na(n_ncbi), n_ncbi > 0, !family %in% EXCLUDE_FAMILIES)
+```
+
+---
+
+## 4. Input — RppH-only (R replicates)
+
+```{r input}
+# R1..X3 are booleans from accession_presence_by_sample.py: an accession is "present" in a sample
+# if ANY of its reference segments has >=1 mapped read (int(mapped) > 0) in that sample's k1.mq0 BAM
+# (one reported alignment, MAPQ >= 0, so multimappers count). in_r_input is therefore ">=1 read in
+# >=1 RppH replicate" -- a pool-presence call, not a depth/detectability call. This is the current
+# Fig. 1 denominator; decision 32 would replace it with a detectability floor.
+# PROVENANCE (confirmed 2026-11-03): the _261019 table is the orderedRef one (built 2026-10-19 in the
+# orderedRef postproc dir; accession set matches the ordered library), NOT the vintage fs4 alignment.
+# It still uses the >0-read threshold (decision 32). See FIGURES_log_consolidate_20261103.md section 11.6.
+presence <- read_csv(PRESENCE_FILE, show_col_types = FALSE) %>%
+  mutate(
+    acc_clean  = sub("\\.\\d+$", "", accession),
+    in_r_input = R1 | R2 | R3,
+    in_x_exp   = X1 | X2 | X3
+  ) %>%
+  filter(!acc_clean %in% EXCLUDE_ACC_CLEAN)
+
+input_accs <- presence %>% filter(in_r_input) %>% pull(acc_clean)
+
+input_counts <- tibble(acc_clean = input_accs) %>%
+  inner_join(tax_df, by = "acc_clean") %>%
+  group_by(family) %>%
+  summarise(
+    n_input = n_distinct(acc_clean),
+    phylum  = names(sort(table(phylum), decreasing = TRUE))[1],
+    .groups = "drop"
+  )
+
+presence_summary <- presence %>%
+  mutate(category = case_when(
+    in_r_input & in_x_exp  ~ "R and X (both)",
+    in_r_input & !in_x_exp ~ "R only (input, not in Xrn1)",
+    !in_r_input & in_x_exp ~ "X only (Xrn1, not in input)",
+    TRUE                   ~ "Neither"
+  )) %>% count(category)
+print(presence_summary)
+print(presence %>% summarise(across(c(R1, R2, R3, X1, X2, X3), sum)))
+message(glue("{length(input_accs)} input accessions | {sum(input_counts$n_input)} joined to taxonomy"))
+```
+
+---
+
+## 5. Output — XR-positive accessions with CM annotation
+
+```{r load_peaks}
+peaks_raw <- read_csv(PEAKS_FILE, show_col_types = FALSE) %>%
+  mutate(
+    acc_clean      = sub("\\.\\d+$", "", sub("\\|.*", "", accession)),
+    family         = if_else(is.na(family) | family == "Unannotated",
+                             "Unannotated", family),
+    n_reps_passing = as.integer(n_reps_passing),
+    peak_pass_R1   = as.logical(peak_pass_R1),
+    peak_pass_R2   = as.logical(peak_pass_R2),
+    peak_pass_R3   = as.logical(peak_pass_R3),
+    treated_sf_R1  = as.numeric(treated_sf_R1),
+    treated_sf_R2  = as.numeric(treated_sf_R2),
+    treated_sf_R3  = as.numeric(treated_sf_R3),
+    qvalue_R1      = as.numeric(qvalue_R1),
+    qvalue_R2      = as.numeric(qvalue_R2),
+    qvalue_R3      = as.numeric(qvalue_R3),
+    any_hit        = as.logical(any_hit)
+  ) %>%
+  filter(!family %in% EXCLUDE_FAMILIES, !acc_clean %in% EXCLUDE_ACC_CLEAN)
+
+message(glue("candidate rows: {nrow(peaks_raw)}"))
+print(table(peaks_raw$n_reps_passing, useNA = "ifany"))
+
+# CM columns: report what the file carries, so the CM set used is visible in the knit.
+# Class 4 is read from CLASS4_PREFERRED when the file has it, else from cl4.cm_hit.
+cm_hit_cols <- grep("\\.cm_hit$", names(peaks_raw), value = TRUE)
+message(glue("CM columns in peaks file ({length(cm_hit_cols)}): {paste(cm_hit_cols, collapse = ', ')}"))
+if (CLASS4_PREFERRED %in% cm_hit_cols) CM_COLS["Class 4"] <- CLASS4_PREFERRED
+missing_cm <- CM_COLS[!CM_COLS %in% cm_hit_cols]
+if (length(missing_cm))
+  stop(glue("CM column(s) not in the peaks file: {paste(missing_cm, collapse = ', ')}"))
+not_shown_cm <- setdiff(cm_hit_cols, CM_COLS)
+if (length(not_shown_cm))
+  message(glue("Annotated but not shown in Fig. 1 (in-study or non-class models): ",
+               "{paste(not_shown_cm, collapse = ', ')}"))
+message(glue("Class 4 read from: {CM_COLS[['Class 4']]}"))
+
+# any_hit in the file is TRUE for a hit by ANY annotated model, including in-study classes.
+# Recompute it over the Fig. 1 classes only; keep the file's value as any_hit_all_models.
+has_hit <- function(x) !is.na(x) & as.character(x) != ""
+peaks_raw$any_hit_all_models <- peaks_raw$any_hit
+peaks_raw$any_hit <- Reduce(`|`, lapply(unname(CM_COLS), function(col) has_hit(peaks_raw[[col]])))
+message(glue("rows with a hit: all models {sum(peaks_raw$any_hit_all_models, na.rm = TRUE)} | ",
+             "Fig. 1 classes {sum(peaks_raw$any_hit)}"))
+```
+
+```{r filter_classify}
+passing_tiles <- peaks_raw %>%
+  filter(!is.na(n_reps_passing), n_reps_passing >= MIN_REPS) %>%
+  mutate(
+    cm_class = case_when(
+      has_hit(.data[[CM_COLS[["Class 1a"]]]]) ~ "Class 1a",
+      has_hit(.data[[CM_COLS[["Class 1b"]]]]) ~ "Class 1b",
+      has_hit(.data[[CM_COLS[["Class 2"]]]])  ~ "Class 2",
+      has_hit(.data[[CM_COLS[["Class 3"]]]])  ~ "Class 3",
+      has_hit(.data[[CM_COLS[["Class 4"]]]])  ~ "Class 4",
+      has_hit(.data[[CM_COLS[["Dumbbell"]]]]) ~ "Dumbbell",
+      TRUE                                 ~ "No CM hit"
+    ),
+    cm_class = factor(cm_class, levels = c("Class 1a","Class 1b","Class 2",
+                                           "Class 3","Class 4","Dumbbell","No CM hit"))
+  )
+
+det_accs <- passing_tiles %>%
+  group_by(family, acc_clean) %>%
+  slice_max(n_reps_passing, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+message(glue("{nrow(det_accs)} XR-positive accessions | {n_distinct(det_accs$family)} families"))
+print(table(det_accs$cm_class))
+```
+
+### Sanity check — thresholds
+
+```{r sanity_filter}
+all_tsf <- c(det_accs$treated_sf_R1[which(det_accs$peak_pass_R1)],
+             det_accs$treated_sf_R2[which(det_accs$peak_pass_R2)],
+             det_accs$treated_sf_R3[which(det_accs$peak_pass_R3)]) %>% na.omit()
+all_qval <- c(det_accs$qvalue_R1[which(det_accs$peak_pass_R1)],
+              det_accs$qvalue_R2[which(det_accs$peak_pass_R2)],
+              det_accs$qvalue_R3[which(det_accs$peak_pass_R3)]) %>% na.omit()
+message(glue("treated_sf: {round(min(all_tsf),4)} – {round(max(all_tsf),4)}"))
+message(glue("qvalue:     {signif(min(all_qval),3)} – {signif(max(all_qval),3)}"))
+stopifnot("treated_sf below 0.3" = min(all_tsf) >= 0.3,
+          "qvalue above 0.01"    = max(all_qval) <= 0.01)
+message("Filter verified")
+```
+
+---
+
+## 6. Summaries
+
+```{r summaries}
+output_counts <- det_accs %>% group_by(family) %>% summarise(n_output = n(), .groups = "drop")
+
+family_sum <- input_counts %>%
+  left_join(ncbi_counts, by = "family") %>%
+  left_join(output_counts, by = "family") %>%
+  replace_na(list(n_output = 0)) %>%
+  mutate(n_ncbi_capped = pmax(n_ncbi, n_input, na.rm = TRUE))
+
+# Exclusion guard: halts the knit if an excluded family or accession reached a plotted table
+stopifnot(
+  "excluded family in family_sum" = !any(family_sum$family %in% EXCLUDE_FAMILIES),
+  "excluded family in det_accs"   = !any(det_accs$family   %in% EXCLUDE_FAMILIES),
+  "excluded accession in input"   = !any(input_accs        %in% EXCLUDE_ACC_CLEAN),
+  "excluded accession in det_accs"= !any(det_accs$acc_clean %in% EXCLUDE_ACC_CLEAN)
+)
+
+write_csv(family_sum, OUT_CSV)
+
+# species  = NCBI species-rank node (current ICTV binomial)
+# organism = GenBank ORGANISM line (familiar name); use this for anything a reader sees
+det_named <- det_accs %>%
+  left_join(tax_df %>% select(acc_clean, accession, organism, species, genus, phylum),
+            by = "acc_clean", suffix = c("", "_tax")) %>%
+  select(family, genus, acc_clean, accession, organism, species,
+         n_reps_passing, cm_class, any_hit) %>%
+  arrange(family, organism)
+
+write_csv(det_named, OUT_DET)
+message(glue("detection summary: {nrow(det_named)} rows | ",
+             "missing organism: {sum(is.na(det_named$organism))} | ",
+             "missing species: {sum(is.na(det_named$species))}"))
+
+n_phyla <- n_distinct(family_sum$phylum[family_sum$phylum != "Unannotated"])
+message(glue("{sum(family_sum$n_input)} input | {sum(family_sum$n_output)} XR-positive | ",
+             "{nrow(family_sum)} families | {n_phyla} phyla"))
+```
+
+---
+
+## 7. Colours and factor order
+
+```{r colours_order}
+phylum_colors <- c(
+  "Pisuviricota"    = "#4472C4",
+  "Kitrinoviricota" = "#C9542A",
+  "Lenarviricota"   = "#70AD47",
+  "Duplornaviricota"= "#8E7CC3",
+  "Negarnaviricota" = "#A6A6A6",
+  "Unannotated"     = "#999999"
+)
+cm_colors <- c(
+  "Class 1a" = "#B5179E",
+  "Class 1b" = "#7209B7",
+  "Class 2"  = "#3A0CA3",
+  "Class 3"  = "#1B998B",
+  "Class 4"  = "#136F63",
+  "Dumbbell" = "#8C564B"
+)
+anyhit_colors <- c("CM hit" = "#F3722C")
+NO_CM_LABEL   <- "No CM hit"
+region_colors <- c("3′ UTR" = "#E07B54", "Intergenic" = "#6BAED6")
+
+lib_fill_colors <- c("RefSeq, not in library" = GREY_REFSEQ,
+                     "Ordered library"        = GREY_LIB)
+
+phylum_rank <- c("Pisuviricota"=1, "Kitrinoviricota"=2, "Lenarviricota"=3,
+                 "Duplornaviricota"=4, "Negarnaviricota"=5, "Unannotated"=99)
+
+fam_plot <- family_sum %>%
+  mutate(phylum_idx = coalesce(phylum_rank[phylum], 50L)) %>%
+  arrange(phylum_idx, n_input) %>%
+  mutate(family = fct_inorder(factor(family)))
+
+fam_levels <- levels(fam_plot$family)
+n_fam      <- length(fam_levels)
+message(glue("{n_fam} families on the y axis"))
+
+add_phylum <- function(df) {
+  df %>%
+    mutate(family = factor(family, levels = fam_levels)) %>%
+    left_join(fam_plot %>% select(family, phylum), by = "family") %>%
+    filter(!is.na(family))
+}
+
+utr_joined <- utr_df %>% inner_join(tax_df %>% select(acc_clean, family), by = "acc_clean") %>% filter(!is.na(family))
+ig_joined  <- ig_df  %>% inner_join(tax_df %>% select(acc_clean, family), by = "acc_clean") %>% filter(!is.na(family))
+obs_both <- bind_rows(
+  add_phylum(utr_joined) %>% mutate(region = "3′ UTR"),
+  add_phylum(ig_joined)  %>% mutate(region = "Intergenic")
+) %>% mutate(region = factor(region, levels = c("3′ UTR","Intergenic")))
+
+det_plot <- det_accs %>%
+  mutate(family = factor(family, levels = fam_levels)) %>%
+  left_join(fam_plot %>% select(family, phylum), by = "family") %>%
+  filter(!is.na(family))
+
+det_total <- det_plot %>%
+  group_by(family, phylum) %>% summarise(n_det = n(), .groups = "drop") %>%
+  mutate(family = factor(family, levels = fam_levels))
+
+cm_any <- det_plot %>% filter(any_hit) %>%
+  group_by(family) %>% summarise(n_cm = n(), .groups = "drop") %>%
+  mutate(family = factor(family, levels = fam_levels), cm_fill = "CM hit")
+
+cm_class <- det_plot %>% filter(cm_class != "No CM hit") %>%
+  group_by(family, cm_class) %>% summarise(n_cm = n(), .groups = "drop") %>%
+  mutate(family = factor(family, levels = fam_levels)) %>%
+  rename(cm_fill = cm_class)
+```
+
+---
+
+## 8. Shared theme
+
+```{r theme}
+theme_fig <- function(show_y = FALSE, mar = M_MID) {
+  theme_minimal(base_size = 7.5) +
+  theme(
+    axis.text.y        = if (show_y)
+                           element_text(size = 6.5, face = "italic",
+                                        colour = "grey20", hjust = 1)
+                         else element_blank(),
+    axis.ticks.y       = element_blank(),
+    axis.text.x.bottom = element_text(size = 5.8, colour = "grey40"),
+    axis.text.x.top    = element_text(size = 5.8, colour = "grey40"),
+    axis.title.x.bottom= element_text(size = 6.5, colour = "grey30",
+                                      margin = margin(t = 1)),
+    axis.title.x.top   = element_blank(),
+    panel.grid.major.y = element_line(colour = "grey94", linewidth = 0.3),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(colour = "grey90", linewidth = 0.2),
+    plot.title         = element_text(size = 6.8, face = "bold", colour = "grey25",
+                                      margin = margin(b = 1)),
+    plot.margin        = mar
+  )
+}
+legend_inset <- function(pos) {
+  theme(
+    legend.position      = c(pos$x, pos$y),
+    legend.justification = c(pos$jx, pos$jy),
+    legend.text          = element_text(size = 6),
+    legend.title         = element_text(size = 6.5, face = "bold"),
+    legend.key.size      = unit(0.42, "lines"),
+    legend.background    = element_rect(fill = alpha("white", 0.85), colour = NA),
+    legend.margin        = margin(1, 3, 1, 3)
+  )
+}
+```
+
+---
+
+## 9. Panel 1 — library vs NCBI
+
+```{r panel1}
+max_n <- max(fam_plot$n_ncbi_capped, na.rm = TRUE)
+
+phylum_brackets <- fam_plot %>%
+  mutate(yi = as.integer(family)) %>%
+  group_by(phylum) %>%
+  summarise(y_lo = min(yi) - 0.45, y_hi = max(yi) + 0.45,
+            y_mid = mean(range(yi)), .groups = "drop")
+
+p_count <- ggplot(fam_plot, aes(y = family)) +
+  geom_col(aes(x = n_ncbi_capped, fill = "RefSeq, not in library"), width = BAR_WIDTH) +
+  geom_col(aes(x = n_input,       fill = "Ordered library"),        width = BAR_WIDTH) +
+  scale_fill_manual(values = lib_fill_colors, breaks = names(lib_fill_colors), name = NULL) +
+  geom_segment(data = phylum_brackets,
+               aes(x = max_n * 1.05, xend = max_n * 1.05,
+                   y = y_lo, yend = y_hi, colour = phylum),
+               linewidth = 1.4, show.legend = FALSE) +
+  geom_text(data = phylum_brackets,
+            aes(x = max_n * 1.17, y = y_mid, label = phylum, colour = phylum),
+            angle = 90, size = 1.75, hjust = 0.5, fontface = "bold",
+            show.legend = FALSE) +
+  scale_colour_manual(values = phylum_colors) +
+  scale_y_discrete(limits = fam_levels) +
+  scale_x_continuous(limits = c(0, max_n * 1.24), breaks = pretty_breaks(3),
+                     expand = expansion(0), sec.axis = dup_axis(name = NULL)) +
+  labs(title = "Library vs NCBI", x = "RefSeq genomes", y = NULL) +
+  theme_fig(show_y = TRUE, mar = M_LEFT) +
+  legend_inset(LEG_P1)
+```
+
+---
+
+## 10. Panel 2 — feature lengths
+
+```{r panel2}
+p_lengths <- ggplot(obs_both, aes(y = family, x = length, fill = region)) +
+  geom_boxplot(aes(colour = region), outlier.shape = NA,
+               width = BAR_WIDTH * 0.42, linewidth = 0.25,
+               position = position_dodge(width = BAR_WIDTH), show.legend = TRUE) +
+  geom_point(aes(colour = region), shape = 16, size = 0.3, alpha = POINT_ALPHA,
+             position = position_jitterdodge(jitter.height = 0.12,
+                                             dodge.width = BAR_WIDTH),
+             show.legend = FALSE) +
+  scale_fill_manual(values = region_colors, name = NULL) +
+  scale_colour_manual(values = region_colors, name = NULL) +
+  scale_y_discrete(limits = fam_levels) +
+  scale_x_continuous(limits = c(0, NA), breaks = c(0, 500, 1000, 1500),
+                     labels = c("0", "500", "1,000", "1,500"),
+                     expand = expansion(mult = c(0, 0.02)),
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(title = "Feature length", x = "nt", y = NULL) +
+  guides(fill = guide_legend(override.aes = list(colour = region_colors,
+                                                 alpha = 1, shape = NA)),
+         colour = "none") +
+  theme_fig(show_y = FALSE, mar = M_RIGHT) +
+  legend_inset(list(x = 0.99, y = 0.02, jx = 1, jy = 0))
+```
+
+---
+
+## 11. Panel 3 — XR-positive accessions
+
+```{r panel3}
+# XR-positive accessions per family, in GREY_LIB. No input backdrop and no phylum colour: the
+# input denominator is dropped so the axis scales to the XR counts (not the much larger input
+# counts), and phylum is already shown by the brackets in panel 1. This grey bar is the same
+# bar that the CM panel uses as its denominator, with CM class overlaid there.
+mx_xr <- max(det_total$n_det, na.rm = TRUE) * 1.04
+
+p_det <- ggplot(det_total, aes(y = family, x = n_det)) +
+  geom_col(fill = GREY_LIB, width = BAR_WIDTH) +
+  scale_y_discrete(limits = fam_levels) +
+  scale_x_continuous(limits = c(0, mx_xr), breaks = pretty_breaks(3),
+                     expand = expansion(mult = c(0, 0.02)),
+                     sec.axis = dup_axis(name = NULL)) +
+  labs(title = "XR-positive", x = "accessions", y = NULL) +
+  theme_fig(show_y = FALSE)
+```
+
+---
+
+## 12. Panel 4 — CM matches
+
+```{r panel4_fn}
+# Backdrop = all XR-positive accessions in the family, in GREY_LIB. The CM bar is drawn
+# over it from 0, so the visible grey remainder is exactly the XR-positive accessions with
+# no CM hit. The backdrop carries a legend key so that remainder is labelled.
+build_p_cm <- function(cm_data, fill_vals, fill_name) {
+  mx <- max(det_total$n_det, na.rm = TRUE) * 1.04
+  vals <- c(fill_vals, setNames(GREY_LIB, NO_CM_LABEL))
+  ggplot() +
+    geom_col(data = det_total, aes(y = family, x = n_det, fill = NO_CM_LABEL),
+             width = BAR_WIDTH) +
+    geom_col(data = cm_data, aes(y = family, x = n_cm, fill = cm_fill),
+             width = BAR_WIDTH, position = "stack") +
+    scale_fill_manual(values = vals, breaks = names(vals), name = fill_name,
+                      drop = FALSE,
+                      guide = guide_legend(title.position = "top", ncol = 1)) +
+    scale_y_discrete(limits = fam_levels) +
+    scale_x_continuous(limits = c(0, mx), breaks = pretty_breaks(3),
+                       expand = expansion(mult = c(0, 0.02)),
+                       sec.axis = dup_axis(name = NULL)) +
+    labs(title = "CM matches", x = "accessions", y = NULL) +
+    theme_fig(show_y = FALSE) +
+    legend_inset(LEG_CM)
+}
+
+p_cm_a <- build_p_cm(cm_any,   anyhit_colors, "CM match")
+p_cm_b <- build_p_cm(cm_class, cm_colors,     "CM class")
+```
+
+---
+
+## 13. Assemble and save
+
+```{r assemble, message=FALSE, warning=FALSE}
+save_fig <- function(p_cm, out_pdf, out_svg, cm_caption) {
+  plots <- cowplot::align_plots(p_count, p_det, p_cm, p_lengths,
+                                align = "v", axis = "lr")
+  fig <- cowplot::plot_grid(plots[[1]], plots[[2]], plots[[3]], plots[[4]],
+                            nrow = 1, rel_widths = c(1, 0.58, 0.58, 0.88))
+  final <- cowplot::plot_grid(
+    cowplot::ggdraw() + cowplot::draw_label(
+      "+ssRNA virome library — composition, XR sites, CM matches and feature lengths",
+      fontface = "bold", size = 9, x = 0.005, hjust = 0, colour = "grey10"),
+    cowplot::ggdraw() + cowplot::draw_label(
+      glue("{sum(family_sum$n_input)} accessions in the ordered library  ·  ",
+           "{nrow(det_accs)} XR-positive (≥{MIN_REPS} of 3 replicates)  ·  ",
+           "{sum(det_accs$any_hit, na.rm=TRUE)} with a CM match  ·  ",
+           "{nrow(family_sum)} families  ·  {n_phyla} phyla"),
+      size = 7, x = 0.005, hjust = 0, colour = "grey45"),
+    fig,
+    cowplot::ggdraw() + cowplot::draw_label(
+      glue("Light grey = RefSeq complete genomes not in the library (NCBI nuccore, 2026-10-19); dark grey = in the library (each panel's denominator). ",
+           "Panel 2: dark grey = accessions with ≥1 XR site (treated_sf ≥ 0.3, ctrl_sf ≤ 0.1, fold ≥ 3, stall_reads ≥ 10, q ≤ 0.01, in ≥{MIN_REPS} of 3 reps). ",
+           "Panel 3: dark grey = XR-positive, no hit to a previously described model (xrRNA classes 1a, 1b, 2, 3, 4 or dumbbell, Rfam RF00525); colour = {cm_caption}; models defined in this study not shown. ",
+           "Panel 4: 3′UTR and intergenic feature lengths, < {MIN_LEN} nt excluded. ",
+           "Fiersviridae (2 bacteriophage accessions, host mis-annotated) excluded."),
+      size = 5.8, x = 0.005, hjust = 0, colour = "grey55"),
+    ncol = 1, rel_heights = c(0.026, 0.021, 1, 0.046)
+  )
+  ggsave(out_pdf, final, width = FIGURE_W, height = FIGURE_H, device = cairo_pdf)
+  message("PDF -> ", out_pdf)
+  svglite::svglite(out_svg, width = FIGURE_W, height = FIGURE_H, fix_text_size = FALSE)
+  print(final); dev.off()
+  message("SVG -> ", out_svg)
+  invisible(final)
+}
+
+fig_a <- save_fig(p_cm_a, OUT_PDF_A, OUT_SVG_A, "accessions with any CM match")
+fig_b <- save_fig(p_cm_b, OUT_PDF_B, OUT_SVG_B, "CM class (1a > 1b > 2 > 3 > 4 > dumbbell by priority)")
+
+qc_lines <- c(
+  glue("Figure 1A v8 QC log — {Sys.time()}"),
+  "---",
+  glue("Peaks:    {PEAKS_FILE}"),
+  glue("Presence: {PRESENCE_FILE}"),
+  glue("Taxonomy: {CSV_FILE}"),
+  glue("NCBI:     {NCBI_FILE}"),
+  glue("FASTA:    {FASTA_FILE}"),
+  glue("Peaks md5: {tools::md5sum(path.expand(PEAKS_FILE))}"),
+  glue("CM columns in file: {paste(cm_hit_cols, collapse = ', ')}"),
+  glue("CM columns plotted: {paste(CM_COLS, collapse = ', ')}"),
+  glue("CM columns not shown: {paste(not_shown_cm, collapse = ', ')}"),
+  glue("Rows with a hit, all models / Fig. 1 classes: ",
+       "{sum(peaks_raw$any_hit_all_models, na.rm = TRUE)} / {sum(peaks_raw$any_hit)}"),
+  "---",
+  glue("Excluded families:   {paste(EXCLUDE_FAMILIES, collapse = ', ')}"),
+  glue("Excluded accessions: {paste(excluded$accession, collapse = ', ')}"),
+  glue("Features parsed:                {nrow(fasta_df)}"),
+  glue("Input accessions (>=1 R rep):   {length(input_accs)}"),
+  glue("Passing tiles (n_reps>={MIN_REPS}):     {nrow(passing_tiles)}"),
+  glue("XR-positive accessions:         {nrow(det_accs)}"),
+  glue("  with any CM match:            {sum(det_accs$any_hit, na.rm=TRUE)}"),
+  glue("  treated_sf: {round(min(all_tsf),4)} – {round(max(all_tsf),4)}"),
+  glue("  qvalue:     {signif(min(all_qval),3)} – {signif(max(all_qval),3)}"),
+  "CM class distribution:",
+  capture.output(print(table(det_accs$cm_class))),
+  "Presence categories:",
+  capture.output(print(as.data.frame(presence_summary)))
+)
+writeLines(qc_lines, OUT_QC)
+message("Summary   -> ", OUT_CSV)
+message("Detection -> ", OUT_DET)
+message("QC log    -> ", OUT_QC)
+```
+
+## Preview
+
+```{r preview_a, fig.width=10, fig.height=7.6}
+fig_a
+```
+
+```{r preview_b, fig.width=10, fig.height=7.6}
+fig_b
+```
