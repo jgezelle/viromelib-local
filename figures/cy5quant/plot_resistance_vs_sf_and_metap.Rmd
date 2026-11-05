@@ -1,0 +1,557 @@
+---
+title: "Normalized % Resistance vs updated stall fraction and meta p-value"
+output: html_notebook
+---
+
+## Overview
+
+Two inputs are merged here:
+
+1. `cy5_bandquant_plot_20261105_pvalues.xlsx` — the in vitro Cy5 band
+   quantification (% resistance, 2 replicates per organism). This is the only
+   source of resistance values.
+2. `261019_re-run_viromelib_orderedRef.peaks_annotated_known6cm.csv` — the
+   updated re-run. All stall-fraction and p-value columns come from here,
+   replacing the stale `mean sf` column and the hand-computed Fisher p-value
+   used in the previous version of this notebook.
+
+Key points about the merge:
+
+- The full `peak_id` string cannot be used as the join key. Two tile windows
+  changed between runs (`orsay` `|93|0-196` -> `|93|0-189`, `pvyv`
+  `|188|160-356` -> `|188|160-350`), so a `peak_id` join silently drops those
+  two organisms. The stable key is `peak_position_id` (the `peak_id` with the
+  trailing `|start-end` window removed) plus `tile_id`.
+- `meta_pvalue` from the re-run replaces the Fisher-combined p-value. The
+  re-run already combines the three replicates, so combining them again by
+  hand is both redundant and less correct.
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+## install.packages(c("ggplot2","dplyr","ggrepel","readxl","svglite"))  # run once if needed
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(readxl)
+library(svglite)
+```
+
+## 1. Load the Cy5 quantification
+
+```{r load-cy5}
+cy5_file <- "cy5_bandquant_plot_20261105_pvalues.xlsx"
+
+cy5 <- read_excel(cy5_file)
+
+# The sheet carries trailing empty spacer columns (Column1..Column7) where the
+# old sf / p-value columns were deleted. Keep only the columns we need.
+cy5 <- cy5 %>%
+  select(
+    replicate,
+    Organism,
+    Accession,
+    peak_id,
+    tile_id,
+    perc_resistance = `Perc. Resistance`
+  ) %>%
+  mutate(
+    replicate = factor(replicate),
+    # strip the trailing "|<start>-<end>" window to get peak_position_id
+    peak_position_id = sub("\\|[^|]*$", "", peak_id)
+  )
+
+cy5
+```
+
+## 2. Load the updated peaks table
+
+The re-run file is ~18 MB and ~80 columns wide; we read it once and keep only
+the columns used below.
+
+```{r load-peaks}
+peaks_file <- "261019_re-run_viromelib_orderedRef.peaks_annotated_known6cm.csv"
+
+peaks_all <- read.csv(peaks_file, stringsAsFactors = FALSE)
+
+peaks <- peaks_all %>%
+  select(
+    peak_position_id,
+    tile_id,
+    peak_id_new = peak_id,
+    accession,
+    species,
+    meta_pvalue,
+    meta_qvalue,
+    mean_treated_sf,
+    median_treated_sf,
+    stall_site_rank,
+    n_reps_passing,
+    fail_reasons,
+    any_hit,
+    treated_sf_R1, treated_sf_R2, treated_sf_R3,
+    pvalue_R1, pvalue_R2, pvalue_R3
+  )
+
+nrow(peaks_all)
+```
+
+## 3. Merge and verify
+
+```{r merge}
+merged <- cy5 %>%
+  left_join(peaks, by = c("peak_position_id", "tile_id"))
+
+# Fail loudly rather than plotting a silently incomplete figure.
+unmatched <- merged %>% filter(is.na(meta_pvalue))
+if (nrow(unmatched) > 0) {
+  print(unmatched %>% select(Organism, peak_id, tile_id, peak_position_id))
+  stop("Some Cy5 rows did not match a peak in the re-run file (see above).")
+}
+
+merged %>%
+  select(replicate, Organism, species, tile_id,
+         mean_treated_sf, meta_pvalue, stall_site_rank, n_reps_passing)
+```
+
+```{r write-merged}
+write.csv(merged, "merged_cy5_peaks_20261105.csv", row.names = FALSE)
+```
+
+## 4. Normalize % resistance
+
+Normalization is anchored to Zika within each replicate, matching how the old
+`Norm. Perc. Resistance` column was computed (Zika = 1.0 in both replicates).
+The anchor is set explicitly so it is visible and changeable.
+
+```{r normalize}
+anchor_organism <- "zikv"
+
+merged <- merged %>%
+  group_by(replicate) %>%
+  mutate(
+    anchor_value = perc_resistance[Organism == anchor_organism][1],
+    norm_perc_resistance = perc_resistance / anchor_value
+  ) %>%
+  ungroup()
+
+merged %>% select(replicate, Organism, perc_resistance, norm_perc_resistance)
+```
+
+## 5. Per-organism summary
+
+- `mean_treated_sf` / `sd_sf` — updated mean stall fraction and the SD of its
+  three replicates (horizontal error bars on the mean-sf plot)
+- `median_treated_sf` — median stall fraction. Not plotted; see 8a and 8b.
+- `mad_sf` / `half_range_sf` — alternative spread statistics, tabled in 8c to
+  document why error bars use SD.
+- `neg_log10_meta_p` — `-log10(meta_pvalue)` from the re-run; higher = more
+  significant. This is what the sf plots are colored by, so every sf panel
+  carries the p-value information alongside the sf variance.
+- `neg_log10_fisher_p` — the three per-replicate p-values recombined by
+  Fisher's method, as the old notebook did. Kept only as a cross-check against
+  `meta_pvalue`; the re-run's own combination is the one to use.
+- `sd_neg_log10_p` — SD of the three per-replicate `-log10(p)` values
+  (horizontal error bars on the meta-p plot). This is a spread across the
+  individual replicate tests, not an uncertainty on `meta_pvalue` itself.
+- `mean_resist` / `sd_resist` — mean and SD of the 2 Cy5 resistance
+  replicates (vertical error bars on every plot)
+- `point_label` — organism name and genome accession, used for the on-plot
+  labels
+
+```{r summarize}
+fisher_combine <- function(p) {
+  p <- p[!is.na(p)]
+  k <- length(p)
+  if (k == 0) return(NA_real_)
+  pchisq(-2 * sum(log(p)), df = 2 * k, lower.tail = FALSE)
+}
+
+# sf and p-values are properties of the peak, identical across the two
+# resistance replicate rows, so take one copy per organism.
+peak_level <- merged %>%
+  distinct(Organism, .keep_all = TRUE) %>%
+  rowwise() %>%
+  mutate(
+    sd_sf              = sd(c(treated_sf_R1, treated_sf_R2, treated_sf_R3)),
+    mad_sf             = mad(c(treated_sf_R1, treated_sf_R2, treated_sf_R3)),
+    half_range_sf      = diff(range(c(treated_sf_R1, treated_sf_R2,
+                                      treated_sf_R3))) / 2,
+    neg_log10_meta_p   = -log10(meta_pvalue),
+    sd_neg_log10_p     = sd(-log10(c(pvalue_R1, pvalue_R2, pvalue_R3))),
+    fisher_p           = fisher_combine(c(pvalue_R1, pvalue_R2, pvalue_R3)),
+    neg_log10_fisher_p = -log10(fisher_p)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # "NC_035889.1|10329-10808_inferred_3UTR" -> "NC_035889.1"
+    genome      = sub("\\|.*$", "", accession),
+    point_label = paste0(Organism, "\n", genome)
+  ) %>%
+  select(Organism, genome, point_label, species, accession,
+         mean_treated_sf, median_treated_sf,
+         sd_sf, mad_sf, half_range_sf,
+         meta_pvalue, neg_log10_meta_p, sd_neg_log10_p,
+         fisher_p, neg_log10_fisher_p,
+         stall_site_rank, n_reps_passing, any_hit)
+
+resist_level <- merged %>%
+  group_by(Organism) %>%
+  summarise(
+    mean_resist = mean(norm_perc_resistance),
+    sd_resist   = sd(norm_perc_resistance),
+    .groups = "drop"
+  )
+
+summary_df <- peak_level %>% left_join(resist_level, by = "Organism")
+
+summary_df
+```
+
+## 6. Correlations
+
+Correlations are computed at the organism level, on `summary_df`, not on the 18
+raw replicate rows. There are 9 organisms; each contributes 2 Cy5 replicates,
+and those two rows are repeated measurements of the same organism rather than
+independent observations of the sf-vs-resistance relationship. Treating them as
+independent inflates n from 9 to 18 and makes the correlation p-value too
+small. For mean sf: r = 0.77, p = 1.9e-04 on 18 rows versus r = 0.80,
+p = 9.2e-03 on 9 organisms. The correlation is slightly stronger when
+aggregated; it is the p-value that changes materially.
+
+```{r correlations}
+merged <- merged %>% mutate(neg_log10_meta_p = -log10(meta_pvalue))
+
+cor_at_organism_level <- function(x_var, method) {
+  cor.test(summary_df[[x_var]], summary_df$mean_resist, method = method)
+}
+
+ct_mean_sf   <- cor_at_organism_level("mean_treated_sf",   "pearson")
+ct_median_sf <- cor_at_organism_level("median_treated_sf", "pearson")
+ct_metap     <- cor_at_organism_level("neg_log10_meta_p",  "spearman")
+
+# Spearman on the sf axes too, for comparison across panels.
+rho_mean_sf <- cor_at_organism_level("mean_treated_sf", "spearman")
+
+make_cor_label <- function(ct) {
+  stat <- if (ct$method == "Pearson's product-moment correlation") {
+    paste0("Pearson r = ", round(unname(ct$estimate), 3))
+  } else {
+    paste0("Spearman rho = ", round(unname(ct$estimate), 3))
+  }
+  paste0(stat,
+         "\np = ", signif(ct$p.value, 3),
+         "\nn = ", nrow(summary_df), " organisms")
+}
+
+ct_mean_sf
+ct_metap
+rho_mean_sf
+```
+
+Spearman rho is 0.75 against mean sf, median sf and `-log10(meta p)` alike,
+because all three put the nine organisms in the same order. Any difference
+between the panels' Pearson r values reflects the shape of the x axis, not
+additional information about the correlation.
+
+## 7. Plot
+
+One plotting function is used for both panels so the two versions differ only
+in which variable is on the x axis and which is mapped to color.
+
+```{r plot-function}
+# x_var / x_err: columns in summary_df for the x position and its half-width
+# color_var:     column in summary_df mapped to point color
+# show_fit = FALSE drops the least-squares line, for an x variable where a
+# linear fit is not meaningful (e.g. -log10(p); see 8a).
+plot_resistance <- function(x_var, x_err, color_var,
+                            x_lab, color_lab, title, subtitle,
+                            cor_label, color_option = "plasma",
+                            show_fit = TRUE) {
+
+  fit_layer <- if (show_fit) {
+    # Fit on the 9 organism means, matching the reported correlation, rather
+    # than on the 18 replicate rows.
+    geom_smooth(
+      data = summary_df,
+      aes(x = .data[[x_var]], y = mean_resist),
+      method = "lm",            # "loess" for a curved fit
+      se = TRUE,
+      color = "grey20",
+      fill = "steelblue",
+      alpha = 0.15,
+      linewidth = 0.7
+    )
+  } else {
+    NULL
+  }
+
+  ggplot() +
+
+    fit_layer +
+
+    # raw replicate points, faded, to show the underlying spread
+    geom_point(
+      data = merged,
+      aes(x = .data[[x_var]], y = norm_perc_resistance),
+      color = "grey60", size = 1.6, alpha = 0.5
+    ) +
+
+    # horizontal error bars: spread of the 3 replicate measurements
+    geom_errorbarh(
+      data = summary_df,
+      aes(y = mean_resist,
+          xmin = .data[[x_var]] - .data[[x_err]],
+          xmax = .data[[x_var]] + .data[[x_err]]),
+      height = 0.02, color = "grey40"
+    ) +
+
+    # vertical error bars: spread of the 2 Cy5 resistance replicates
+    geom_errorbar(
+      data = summary_df,
+      aes(x = .data[[x_var]],
+          ymin = mean_resist - sd_resist,
+          ymax = mean_resist + sd_resist),
+      width = 0.015 * diff(range(summary_df[[x_var]])),
+      color = "grey40"
+    ) +
+
+    geom_point(
+      data = summary_df,
+      aes(x = .data[[x_var]], y = mean_resist, color = .data[[color_var]]),
+      size = 4.5
+    ) +
+
+    scale_color_viridis_c(name = color_lab, option = color_option) +
+
+    # label = organism name + genome accession, on two lines
+    geom_text_repel(
+      data = summary_df,
+      aes(x = .data[[x_var]], y = mean_resist, label = point_label),
+      size = 3.0, lineheight = 0.9, color = "grey20",
+      box.padding = 0.5, point.padding = 0.3,
+      min.segment.length = 0, segment.color = "grey70",
+      max.overlaps = Inf
+    ) +
+
+    annotate(
+      "text",
+      x = min(merged[[x_var]]) + 0.02 * diff(range(merged[[x_var]])),
+      y = max(merged$norm_perc_resistance) * 0.98,
+      label = cor_label,
+      hjust = 0, vjust = 1, size = 3.6, fontface = "italic"
+    ) +
+
+    labs(x = x_lab, y = "Normalized % Resistance",
+         title = title, subtitle = subtitle) +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+}
+```
+
+x = updated mean stall fraction, colored by meta p-value. This is the only
+figure the notebook produces; section 8 documents the checks behind it.
+
+```{r plot-sf, fig.width=8.5, fig.height=6.5, warning=FALSE, message=FALSE}
+p_sf <- plot_resistance(
+  x_var     = "mean_treated_sf",
+  x_err     = "sd_sf",
+  color_var = "neg_log10_meta_p",
+  x_lab     = "Mean treated stall fraction (261019 re-run)",
+  color_lab = expression(-log[10]("meta p-value")),
+  title     = "Normalized % Resistance vs mean stall fraction",
+  subtitle  = paste(
+    "Horiz. error = SD of 3 sf replicates; vert. error = SD of 2 Cy5",
+    "resistance replicates;\ncolor = meta p-value from the re-run;",
+    "fit and correlation on the 9 organism means"
+  ),
+  cor_label = make_cor_label(ct_mean_sf)
+)
+
+p_sf
+```
+
+## 8. Diagnostics
+
+None of these produce a figure. Each one documents a check behind the single
+plot above.
+
+### 8a. Does the choice of summary variable change the result?
+
+It does not. All three candidate x variables put the nine organisms in the same
+order, so Spearman rho is identical for all three, and the Pearson r values
+differ only by a few thousandths. This is the reason the notebook produces one
+figure rather than three: a second panel reporting the same rank statistic
+would invite a reader to compare Pearson r values across differently shaped x
+axes, which is not a valid comparison.
+
+`-log10(meta p)` is reported with Spearman only. It is not a measurement but
+the output of the stall-calling test, and it depends on read depth as well as
+effect size, so a least-squares fit to it would stack one inference on another.
+
+```{r ranking-variable-check}
+ranking_check <- bind_rows(
+  data.frame(
+    x_variable = "mean sf",
+    pearson_r  = unname(ct_mean_sf$estimate),
+    pearson_p  = ct_mean_sf$p.value,
+    spearman_rho = unname(rho_mean_sf$estimate),
+    spearman_p   = rho_mean_sf$p.value
+  ),
+  data.frame(
+    x_variable = "median sf",
+    pearson_r  = unname(ct_median_sf$estimate),
+    pearson_p  = ct_median_sf$p.value,
+    spearman_rho = unname(
+      cor_at_organism_level("median_treated_sf", "spearman")$estimate),
+    spearman_p   =
+      cor_at_organism_level("median_treated_sf", "spearman")$p.value
+  ),
+  data.frame(
+    x_variable = "-log10(meta p)",
+    pearson_r  = NA_real_,   # not reported: see note above
+    pearson_p  = NA_real_,
+    spearman_rho = unname(ct_metap$estimate),
+    spearman_p   = ct_metap$p.value
+  )
+)
+
+ranking_check
+```
+
+Per-organism ranks under each variable, to confirm nothing moves:
+
+```{r rank-compare}
+summary_df %>%
+  mutate(
+    rank_mean_sf   = rank(-mean_treated_sf),
+    rank_median_sf = rank(-median_treated_sf),
+    rank_metap     = rank(-neg_log10_meta_p)
+  ) %>%
+  arrange(rank_mean_sf) %>%
+  select(Organism, genome, mean_treated_sf, median_treated_sf,
+         neg_log10_meta_p, rank_mean_sf, rank_median_sf, rank_metap)
+```
+
+### 8b. Replicate R3 is systematically the lowest
+
+R3 is the lowest of the three sf replicates for all nine organisms. This does
+not affect the correlation, but it is a systematic property of the sequencing
+replicates rather than noise, and worth knowing independently of this figure.
+It is also why the mean is used rather than the median: with n = 3 the median
+discards R3 every time, so it is not a robust summary here but the midpoint of
+R1 and R2 with a consistently lower third replicate dropped.
+
+```{r r3-check}
+summary_df %>%
+  left_join(
+    merged %>% distinct(Organism, treated_sf_R1, treated_sf_R2, treated_sf_R3),
+    by = "Organism"
+  ) %>%
+  mutate(lowest_rep = c("R1", "R2", "R3")[
+    apply(cbind(treated_sf_R1, treated_sf_R2, treated_sf_R3), 1, which.min)
+  ]) %>%
+  arrange(desc(mean_treated_sf)) %>%
+  select(Organism, treated_sf_R1, treated_sf_R2, treated_sf_R3,
+         lowest_rep, mean_treated_sf, median_treated_sf)
+```
+
+### 8c. Spread statistics
+
+Error bars use SD. MAD is tabled only to show why it is not used: at n = 3 one
+of the three absolute deviations from the median is exactly zero, so
+`median(|x - median(x)|)` returns the smaller of the two non-zero deviations
+and collapses toward zero when the replicates are asymmetric. For `pesti` the
+three sf values span 0.074 and MAD returns 0.0012. SD and half-range track each
+other; MAD tracks neither.
+
+```{r spread-compare}
+summary_df %>%
+  mutate(mad_over_sd = mad_sf / sd_sf) %>%
+  arrange(desc(mean_treated_sf)) %>%
+  select(Organism, sd_sf, half_range_sf, mad_sf, mad_over_sd)
+```
+
+### 8d. meta p-value vs Fisher recombination
+
+Cross-check on the re-run's own replicate combination. These should track each
+other closely; large disagreement means the re-run combines replicates
+differently from a plain Fisher combination of the three per-replicate
+p-values, which would matter before quoting `meta_pvalue` anywhere.
+
+```{r p-crosscheck}
+summary_df %>%
+  mutate(difference = neg_log10_meta_p - neg_log10_fisher_p) %>%
+  arrange(desc(neg_log10_meta_p)) %>%
+  select(Organism, genome, meta_pvalue, fisher_p,
+         neg_log10_meta_p, neg_log10_fisher_p, difference)
+```
+
+## 9. The second Zika genome
+
+The assay library contains two Zika references. Only `NC_035889.1` has a Cy5
+quantification, because that is the accession the tested tile came from, so
+only that one is plotted above. The block below reports the best tile on the
+other genome for comparison, without adding it to the figure. Copying the
+`NC_035889.1` resistance value onto it would be fabricated data, and it would
+also pull the fit, since the two points would sit at the same y with different
+x.
+
+```{r zika-second}
+zika_species <- "Orthoflavivirus zikaense"
+
+zika_best <- peaks_all %>%
+  filter(species == zika_species) %>%
+  mutate(genome = sub("\\|.*$", "", accession)) %>%
+  group_by(genome) %>%
+  slice_min(meta_pvalue, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(neg_log10_meta_p = -log10(meta_pvalue)) %>%
+  select(genome, peak_id, tile_id, meta_pvalue, neg_log10_meta_p,
+         mean_treated_sf, stall_site_rank, n_reps_passing, any_hit) %>%
+  arrange(meta_pvalue)
+
+zika_best
+```
+
+If the second genome should still appear as a reference line rather than a
+data point, this adds it to the figure without implying a resistance
+measurement. The line sits at that tile's mean stall fraction:
+
+```{r zika-second-annotation, fig.width=8.5, fig.height=6.5, warning=FALSE, message=FALSE}
+zika_other <- zika_best %>%
+  filter(genome != "NC_035889.1") %>%
+  slice(1)
+
+p_sf_annot <- p_sf +
+  geom_vline(
+    xintercept = zika_other$mean_treated_sf,
+    linetype = "dashed", color = "grey50", linewidth = 0.5
+  ) +
+  annotate(
+    "text",
+    x = zika_other$mean_treated_sf,
+    y = min(merged$norm_perc_resistance),
+    label = paste0("zikv ", zika_other$genome, " best tile\n(no Cy5 quant)"),
+    hjust = -0.05, vjust = 0, size = 3, color = "grey40"
+  )
+
+p_sf_annot
+```
+
+## 10. Save to file
+
+```{r save}
+save_all <- function(plot, stem, width = 8.5, height = 6.5) {
+  ggsave(paste0(stem, ".png"), plot, width = width, height = height, dpi = 300)
+  ggsave(paste0(stem, ".pdf"), plot, width = width, height = height)
+  ggsave(paste0(stem, ".svg"), plot, width = width, height = height)
+}
+
+save_all(p_sf, "resistance_vs_mean_sf_20261105")
+```
+
+SVG export requires the `svglite` package; PNG and PDF need no extra package.

@@ -1,0 +1,183 @@
+---
+title: "Normalized % Resistance vs Mean SF"
+output: html_notebook
+---
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+## install.packages(c("ggplot2","dplyr","ggrepel","svglite"))  # run once if needed
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(svglite)
+```
+
+## 1. Load & tidy data
+
+```{r load-data}
+df <- read.csv("cy5_bandquant_plot.csv", stringsAsFactors = FALSE)
+
+names(df) <- c("replicate", "Organism", "Accession", "peak_id", "tile_id",
+               "mean_sf", "perc_resistance", "norm_perc_resistance", "stall_site_rank",
+               "pvalue_R1", "pvalue_R2", "pvalue_R3",
+               "treated_sf_R1", "treated_sf_R2", "treated_sf_R3")
+
+df$replicate <- factor(df$replicate)
+df$Organism  <- factor(df$Organism)
+
+head(df)
+```
+
+## 2. Correlation (across all replicate points)
+
+```{r correlation}
+ct <- cor.test(df$mean_sf, df$norm_perc_resistance, method = "pearson")
+r_val <- round(unname(ct$estimate), 3)
+p_val <- signif(ct$p.value, 3)
+cor_label <- paste0("Pearson r = ", r_val, "\np = ", p_val)
+
+ct
+```
+
+## 3. Per-organism summary: sf variance + resistance variance + combined p-value
+
+`mean_sf`, the three `treated_sf_R1/R2/R3` values, and the three `pvalue_R1/R2/R3`
+values are constant across the two resistance replicate rows for a given organism
+(they describe the sf measurement itself, not the resistance replicate), so we pull
+one copy per organism and compute:
+
+- `sd_sf` — spread of the 3 treated-sf replicates (for horizontal error bars)
+- `mean_resist` / `sd_resist` — mean & spread of the 2 resistance replicates (as before)
+- `combined_p` — the 3 per-replicate p-values combined with **Fisher's method**
+  (a standard way to combine independent p-values testing the same hypothesis),
+  reported as `-log10(combined_p)` so higher = more significant
+
+```{r summarize}
+fisher_combine <- function(p) {
+  p <- p[!is.na(p)]
+  k <- length(p)
+  if (k == 0) return(NA_real_)
+  chi2 <- -2 * sum(log(p))
+  pchisq(chi2, df = 2 * k, lower.tail = FALSE)
+}
+
+sf_p_df <- df %>%
+  distinct(Organism, .keep_all = TRUE) %>%
+  rowwise() %>%
+  mutate(
+    sd_sf      = sd(c(treated_sf_R1, treated_sf_R2, treated_sf_R3)),
+    combined_p = fisher_combine(c(pvalue_R1, pvalue_R2, pvalue_R3)),
+    neg_log10_p = -log10(combined_p)
+  ) %>%
+  ungroup() %>%
+  select(Organism, sd_sf, combined_p, neg_log10_p)
+
+resist_df <- df %>%
+  group_by(Organism, mean_sf) %>%
+  summarise(
+    mean_resist = mean(norm_perc_resistance),
+    sd_resist   = sd(norm_perc_resistance),
+    .groups = "drop"
+  )
+
+summary_df <- resist_df %>% left_join(sf_p_df, by = "Organism")
+
+summary_df
+```
+
+## 4. Plot
+
+Raw replicate points are shown faded in the background; the trendline + ribbon is
+fit on those raw points. The bold summary points show each organism's mean position
+with **horizontal error bars = SD of the sf replicates** and **vertical error bars
+= SD of the resistance replicates**, colored by **-log10(combined p-value)**
+(darker/warmer = more significant).
+
+Per-organism summary points with **horizontal error bars = SD of the sf replicates**
+and **vertical error bars = SD of the resistance replicates**, colored by
+**-log10(combined p-value)** (darker/warmer = more significant).
+
+```{r plot, fig.width=8.5, fig.height=6.5, warning=FALSE, message=FALSE}
+p <- ggplot() +
+
+  # trendline + shaded standard-error ribbon (fit on all raw replicate points)
+  geom_smooth(
+    data = df, aes(x = mean_sf, y = norm_perc_resistance),
+    method = "lm",               # swap to "loess" for a curved fit
+    se = TRUE,
+    color = "grey20",
+    fill = "steelblue",
+    alpha = 0.15,                 # faded/semi-transparent band
+    linewidth = 0.7
+  ) +
+
+  # raw replicate points, faded, just to show underlying spread
+  geom_point(
+    data = df, aes(x = mean_sf, y = norm_perc_resistance),
+    color = "grey60", size = 1.6, alpha = 0.5
+  ) +
+
+  # horizontal error bars: variance in sf across the 3 treated-sf replicates
+  geom_errorbarh(
+    data = summary_df,
+    aes(y = mean_resist, xmin = mean_sf - sd_sf, xmax = mean_sf + sd_sf),
+    height = 0.02, color = "grey40"
+  ) +
+
+  # vertical error bars: variance in resistance across the 2 replicates
+  geom_errorbar(
+    data = summary_df,
+    aes(x = mean_sf, ymin = mean_resist - sd_resist, ymax = mean_resist + sd_resist),
+    width = 0.015, color = "grey40"
+  ) +
+
+  # per-organism summary point, colored by combined significance
+  geom_point(
+    data = summary_df,
+    aes(x = mean_sf, y = mean_resist, color = neg_log10_p),
+    size = 4.5
+  ) +
+
+  scale_color_viridis_c(name = expression(-log[10]("combined p-value")), option = "plasma") +
+
+  # organism labels
+  geom_text_repel(
+    data = summary_df,
+    aes(x = mean_sf, y = mean_resist, label = Organism),
+    size = 3.2, color = "grey20", max.overlaps = Inf
+  ) +
+
+  # correlation annotation
+  annotate(
+    "text",
+    x = min(df$mean_sf) + 0.02,
+    y = max(df$norm_perc_resistance) * 0.98,
+    label = cor_label,
+    hjust = 0, vjust = 1, size = 3.6, fontface = "italic"
+  ) +
+
+  labs(
+    x = "Mean SF",
+    y = "Normalized % Resistance",
+    title = "Normalized % Resistance vs Mean SF",
+    subtitle = "Horiz. error = SD of 3 sf replicates; vert. error = SD of 2 resistance replicates;\ncolor = combined significance (Fisher's method); band = SE of trendline"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+
+p
+```
+
+## 5. Save to file
+
+```{r save}
+ggsave("resistance_vs_sf.png", p, width = 8.5, height = 6.5, dpi = 300)
+ggsave("resistance_vs_sf.pdf", p, width = 8.5, height = 6.5)          # vector, for print/publication
+ggsave("resistance_vs_sf.svg", p, width = 8.5, height = 6.5)          # vector, for web/editing (needs the "svglite" package)
+```
+
+Note: the SVG output requires the `svglite` package (`install.packages("svglite")`); PDF export works with base R graphics devices, no extra package needed.
