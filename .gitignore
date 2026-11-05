@@ -48,6 +48,8 @@ libraryDesign/
 outputs-sequencefiles/
 trash/
 workflows/archive/
+archive/
+vintage/
 
 # ── Figure inputs and outputs, at ANY depth in EITHER tree.
 # Pattern-based rather than enumerated, so it keeps working as figure directories are added

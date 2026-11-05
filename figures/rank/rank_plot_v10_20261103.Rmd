@@ -47,12 +47,13 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 
 ```{r config}
 # Same inputs as Fig. 1A: the six-CM "known6cm" re-annotation of the orderedRef run (models known
-# before this study: 1a, 1b, 2, cl3, class4_cl4_v9, dumbbell). See FIGURES_log_consolidate_20261103.md.
+# before this study: 1a, 1b, 2, cl3, class4_cl4_v9, dumbbell). See FIGURES.md.
 INPUT_DIR <- "~/Desktop/viromelib/figures/fig1/inputs/20261019_rerun_viromelib_ordered"
 
-# PASSING set reads the sites table; it must be the known6cm sites_final from step 13 (section 11.4),
-# not the old five-CM sites, so its CM columns match the peaks file below.
-SITES_CSV <- file.path(INPUT_DIR, "261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites_final.csv")
+# PASSING set reads the sites table: the known6cm .sites.csv from step 13 (section 11.4), so its CM
+# columns match the peaks file below. apply_publication_cutoffs.py writes .sites.csv (not .sites_final.csv;
+# the _final name in the five-CM run came from a later step the rank plot does not use).
+SITES_CSV <- file.path(INPUT_DIR, "261019_re-run_viromelib_orderedRef_orderedRef.known6cm.sites.csv")
 PEAKS_CSV <- file.path(INPUT_DIR, "261019_re-run_viromelib_orderedRef.peaks_annotated_known6cm.csv")
 TAX_CSV   <- file.path(INPUT_DIR, "virus_taxonomy_261019.csv")
 
@@ -112,6 +113,9 @@ load_set <- function(rank_set) {
   if (rank_set == "passing") {
     d <- read_csv(SITES_CSV, show_col_types = FALSE)
     d$passed <- TRUE
+    # the sites table keys on `accession`; derive plain_accession if it is not already a column
+    if (!"plain_accession" %in% names(d) && "accession" %in% names(d))
+      d <- d %>% mutate(plain_accession = str_extract(accession, "^[^|]+"))
   } else {
     # raw annotated table: every candidate row. No `organism` column (added later by
     # apply_publication_cutoffs.py --snapshot-manifest) and no plain_accession, so derive both.
@@ -151,6 +155,13 @@ load_set <- function(rank_set) {
     hit_class3   ~ "class3",  hit_class4  ~ "class4", hit_dumbbell ~ "dumbbell",
     TRUE ~ "no_hit"))
 
+  # Passing threshold for the `all` panel: the -log10 p of the WEAKEST passing site (the lowest
+  # among rows that cleared the gates). Every passing accession's best site sits at or above this,
+  # so a horizontal line here marks the passing floor while all points stay visible. In the `all`
+  # set `passed` is per candidate row (n_reps_passing >= MIN_REPS); in `passing` every row passed.
+  pass_rows      <- d$passed %in% TRUE
+  pass_threshold <- if (any(pass_rows)) min(d$log10p[pass_rows], na.rm = TRUE) else NA_real_
+
   ranked <- d %>%
     group_by(plain_accession) %>%
     summarise(
@@ -173,7 +184,7 @@ load_set <- function(rank_set) {
            label_name = coalesce(highlight_name, organism)) %>%
     arrange(desc(best_log10p)) %>%
     mutate(rank = row_number(),
-           frac_rank = (rank - 1) / max(n() - 1, 1),
+           frac_rank = (rank - 1) / max(n() - 1, 1),      # 0 = strongest (left), 1 = weakest (right)
            cm_class = factor(cm_class, levels = names(cm_colors)),
            tip = glue("{coalesce(organism, '(no organism name)')}\n",
                       "{accession}  |  rank {rank}\n",
@@ -182,7 +193,7 @@ load_set <- function(rank_set) {
                       "{n_passing} of {n_rows} candidate positions passed all gates in >={MIN_REPS} reps\n",
                       "strongest: -log10 {pcol} = {round(best_log10p, 2)}"))
 
-  list(data = ranked, pcol = pcol, rank_set = rank_set)
+  list(data = ranked, pcol = pcol, rank_set = rank_set, pass_threshold = pass_threshold)
 }
 
 static_plot <- function(S) {
@@ -206,6 +217,16 @@ static_plot <- function(S) {
                   colour = "grey35", fill = NA)
      else NULL} +
     scale_fill_manual(values = cm_colors, labels = cm_labels, name = "CM class", drop = FALSE) +
+    # passing-threshold line: weakest passing site's -log10 p (all panel only)
+    {if (rank_set == "all" && is.finite(S$pass_threshold))
+       geom_hline(yintercept = S$pass_threshold, linetype = "dashed",
+                  colour = "grey35", linewidth = 0.4)
+     else NULL} +
+    {if (rank_set == "all" && is.finite(S$pass_threshold))
+       annotate("text", x = 1.0, y = S$pass_threshold, hjust = 1, vjust = -0.5,
+                size = 2.6, colour = "grey35",
+                label = glue("passing floor: -log10 {pcol} = {round(S$pass_threshold, 2)}"))
+     else NULL} +
     geom_label_repel(
       data = label_df, aes(label = label_text),
       colour = "black", fontface = "bold", size = 3.3,
@@ -251,6 +272,10 @@ interactive_plot <- function(S) {
                   shape = 21, size = SZ_CM + 1.2, stroke = 0.7, colour = "grey35", fill = NA)
      else NULL} +
     scale_colour_manual(values = cm_colors, labels = cm_labels, name = "CM class", drop = FALSE) +
+    {if (S$rank_set == "all" && is.finite(S$pass_threshold))
+       geom_hline(yintercept = S$pass_threshold, linetype = "dashed",
+                  colour = "grey35", linewidth = 0.4)
+     else NULL} +
     labs(x = "Fractional rank (0 = strongest)",
          y = glue("-log10 {pcol}"),
          title = glue("Rank plot ({S$rank_set}) — hover for organism and accession")) +
